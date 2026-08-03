@@ -170,6 +170,7 @@ router.patch('/:id', requireApplicant, async (req, res) => {
       'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
       'residentialAddress', 'postalAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
+      'addressFormatted', 'addressPlaceId',
     ];
     stringKeys.forEach((key) => {
       if (body[key] !== undefined) {
@@ -177,6 +178,40 @@ router.patch('/:id', requireApplicant, async (req, res) => {
         if (v !== undefined) updateData[key] = v;
       }
     });
+
+    // Address coordinates
+    if (body.addressLatitude !== undefined) {
+      const lat = toDecimal(body.addressLatitude);
+      if (lat !== undefined) updateData.addressLatitude = lat;
+    }
+    if (body.addressLongitude !== undefined) {
+      const lng = toDecimal(body.addressLongitude);
+      if (lng !== undefined) updateData.addressLongitude = lng;
+    }
+    if (body.addressVerified !== undefined) {
+      const b = toBool(body.addressVerified);
+      if (b !== undefined) {
+        updateData.addressVerified = b;
+        if (b) updateData.addressVerifiedAt = new Date();
+      }
+    }
+
+    // If residential address text changed without new coordinates, clear verification
+    if (
+      body.residentialAddress !== undefined &&
+      body.addressLatitude === undefined &&
+      body.addressVerified === undefined
+    ) {
+      const newAddr = clean(body.residentialAddress);
+      if (newAddr !== undefined && newAddr !== application.residentialAddress) {
+        updateData.addressVerified = false;
+        updateData.addressLatitude = null;
+        updateData.addressLongitude = null;
+        updateData.addressFormatted = null;
+        updateData.addressPlaceId = null;
+        updateData.addressVerifiedAt = null;
+      }
+    }
 
     // Boolean
     if (body.cellVerified !== undefined) {
