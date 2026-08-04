@@ -99,14 +99,6 @@ model Application {
   workTelNumber         String?
   cellVerified          Boolean           @default(false)
 
-  // Address verification (Google Maps)
-  addressLatitude       Float?
-  addressLongitude      Float?
-  addressFormatted      String?           // Canonical address from Google
-  addressPlaceId        String?           // Google place_id
-  addressVerified       Boolean           @default(false)
-  addressVerifiedAt     DateTime?
-
   // Step 2 - Property Particulars
   peopleOnProperty      Int?
   childrenUnder18       Int?
