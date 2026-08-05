@@ -35,19 +35,20 @@ const toBool = (val) => {
 // Create new application (draft)
 router.post('/', requireApplicant, async (req, res) => {
   try {
-    const existing = await prisma.application.findFirst({
+    // Only one DRAFT at a time — must submit (or cancel) before starting another
+    const existingDraft = await prisma.application.findFirst({
       where: {
         userId: req.user.id,
-        status: { in: ['DRAFT', 'PENDING'] },
+        status: 'DRAFT',
       },
       include: { documents: true },
     });
 
-    if (existing) {
+    if (existingDraft) {
       return res.status(400).json({
         success: false,
-        message: 'You already have an active application',
-        data: existing,
+        message: 'You already have a draft application. Please complete and submit it before starting a new one.',
+        data: existingDraft,
       });
     }
 
@@ -170,6 +171,7 @@ router.patch('/:id', requireApplicant, async (req, res) => {
       'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
       'residentialAddress', 'postalAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
+      'addressFormatted', 'addressPlaceId',
     ];
     stringKeys.forEach((key) => {
       if (body[key] !== undefined) {
@@ -177,6 +179,40 @@ router.patch('/:id', requireApplicant, async (req, res) => {
         if (v !== undefined) updateData[key] = v;
       }
     });
+
+    // Address coordinates
+    if (body.addressLatitude !== undefined) {
+      const lat = toDecimal(body.addressLatitude);
+      if (lat !== undefined) updateData.addressLatitude = lat;
+    }
+    if (body.addressLongitude !== undefined) {
+      const lng = toDecimal(body.addressLongitude);
+      if (lng !== undefined) updateData.addressLongitude = lng;
+    }
+    if (body.addressVerified !== undefined) {
+      const b = toBool(body.addressVerified);
+      if (b !== undefined) {
+        updateData.addressVerified = b;
+        if (b) updateData.addressVerifiedAt = new Date();
+      }
+    }
+
+    // If residential address text changed without new coordinates, clear verification
+    if (
+      body.residentialAddress !== undefined &&
+      body.addressLatitude === undefined &&
+      body.addressVerified === undefined
+    ) {
+      const newAddr = clean(body.residentialAddress);
+      if (newAddr !== undefined && newAddr !== application.residentialAddress) {
+        updateData.addressVerified = false;
+        updateData.addressLatitude = null;
+        updateData.addressLongitude = null;
+        updateData.addressFormatted = null;
+        updateData.addressPlaceId = null;
+        updateData.addressVerifiedAt = null;
+      }
+    }
 
     // Boolean
     if (body.cellVerified !== undefined) {

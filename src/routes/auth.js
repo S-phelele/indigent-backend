@@ -22,6 +22,21 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
+    // Password rules: min 8 chars, upper, lower, special
+    const passwordErrors = [];
+    if (password.length < 8) passwordErrors.push('at least 8 characters');
+    if (!/[A-Z]/.test(password)) passwordErrors.push('a capital letter');
+    if (!/[a-z]/.test(password)) passwordErrors.push('a small letter');
+    if (!/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/.test(password)) {
+      passwordErrors.push('a special character (e.g. @, !, #, %, &)');
+    }
+    if (passwordErrors.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Password must include ${passwordErrors.join(', ')}`,
+      });
+    }
+
     const existing = await prisma.user.findFirst({
       where: {
         OR: [
