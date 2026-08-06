@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 const { authenticate } = require('../middleware/auth');
+const { writeAuditLog, getClientIp } = require('../utils/audit');
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -67,6 +68,16 @@ router.post('/register', async (req, res) => {
 
     const token = generateToken(user.id);
 
+    await writeAuditLog({
+      userId: user.id,
+      userEmail: user.email,
+      userRole: user.role,
+      action: 'REGISTER',
+      entityType: 'User',
+      entityId: user.id,
+      ipAddress: getClientIp(req),
+    });
+
     res.status(201).json({
       success: true,
       message: 'Registration successful',
@@ -94,6 +105,16 @@ router.post('/login', async (req, res) => {
     }
 
     const token = generateToken(user.id);
+
+    await writeAuditLog({
+      userId: user.id,
+      userEmail: user.email,
+      userRole: user.role,
+      action: 'LOGIN',
+      entityType: 'User',
+      entityId: user.id,
+      ipAddress: getClientIp(req),
+    });
 
     res.json({
       success: true,
