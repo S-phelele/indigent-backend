@@ -1,0 +1,748 @@
+{
+  "info": {
+    "name": "INDIGENT Register API",
+    "_postman_id": "b7c1e6a2-4d3f-4a91-9f21-3c8a0d7e51aa",
+    "description": "Full API surface for the Indigent Register backend (Express + Prisma + PostgreSQL).\n\nBase URL defaults to http://localhost:5000.\n\nHow to use:\n1. Run `Auth > Login (Admin)` and `Auth > Login (Applicant - seeded)` first. Tokens are captured automatically into collection variables.\n2. Run `Applications > 1. Create Draft` - this captures `applicationId` and the per-document ids.\n3. Upload the 3 REQUIRED documents (ID Copy, Bank Statements, Affidavit) - pick any local PDF/JPG/PNG in the form-data `file` field.\n4. Fill steps 1-4 with the PATCH requests.\n5. Submit, then review from the Admin folder.\n\nEverything chains via collection variables, so you can also hit `Run collection` in order.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "applicantToken", "value": "", "type": "string" },
+    { "key": "adminToken", "value": "", "type": "string" },
+    { "key": "applicationId", "value": "", "type": "string" },
+    { "key": "docIdCopyId", "value": "", "type": "string" },
+    { "key": "docBankStatementsId", "value": "", "type": "string" },
+    { "key": "docAffidavitId", "value": "", "type": "string" },
+    { "key": "documentId", "value": "", "type": "string" },
+    { "key": "cellNumber", "value": "0815912000", "type": "string" },
+    { "key": "otpCode", "value": "", "type": "string" },
+    { "key": "newEmail", "value": "", "type": "string" },
+    { "key": "newIdNumber", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "00 - Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api", "health"] },
+            "description": "Sanity check that the server is up. Does NOT touch the database - it will return 200 even if Postgres is unreachable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status is ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Auth",
+      "item": [
+        {
+          "name": "POST /api/auth/register (new applicant)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{newEmail}}\",\n  \"password\": \"Test@1234\",\n  \"firstName\": \"Thabo\",\n  \"lastName\": \"Mokoena\",\n  \"cellNumber\": \"0821234567\",\n  \"idNumber\": \"{{newIdNumber}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "description": "Creates an APPLICANT and returns a JWT immediately.\n\nPassword rules enforced by the API: min 8 chars, at least one uppercase, one lowercase, one special character. (Note: no digit is required.)\n\nEmail and idNumber must both be unique - the pre-request script generates fresh ones each run so this request is re-runnable."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "pm.collectionVariables.set('newEmail', `applicant.${stamp}@example.com`);",
+                  "pm.collectionVariables.set('newIdNumber', String(stamp).slice(-13).padStart(13, '9'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "if (body.success && body.data && body.data.token) {",
+                  "  pm.collectionVariables.set('applicantToken', body.data.token);",
+                  "  console.log('applicantToken captured for', body.data.user.email);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/register (weak password - expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"weak.{{$timestamp}}@example.com\",\n  \"password\": \"abc\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "description": "Negative test - the response message lists every rule that failed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "console.log(pm.response.json().message);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/login (Applicant - seeded)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"john.doe@example.com\",\n  \"password\": \"applicant123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "description": "Seeded applicant from prisma/seed.js. Captures `applicantToken`.\n\nRun `npm run db:seed` if this returns 401."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.success) {",
+                  "  pm.collectionVariables.set('applicantToken', body.data.token);",
+                  "  pm.collectionVariables.set('cellNumber', body.data.user.cellNumber || '0815912000');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/login (Admin - seeded)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@indigent.gov.za\",\n  \"password\": \"admin123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "description": "Seeded ADMIN. Captures `adminToken` used by the whole Admin folder."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.success) {",
+                  "  pm.collectionVariables.set('adminToken', body.data.token);",
+                  "  pm.test('role is ADMIN', () => pm.expect(body.data.user.role).to.eql('ADMIN'));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/auth/me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "auth", "me"] },
+            "description": "Returns the user record behind the token (password excluded). Use this to confirm a token is still valid."
+          }
+        },
+        {
+          "name": "GET /api/auth/me (no token - expect 401)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "auth", "me"] },
+            "description": "Negative test for the `authenticate` middleware."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/send-otp",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"cellNumber\": \"{{cellNumber}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/send-otp", "host": ["{{baseUrl}}"], "path": ["api", "auth", "send-otp"] },
+            "description": "No SMS gateway is wired up. The code is printed to the server console AND returned as `demoOtp` because NODE_ENV !== 'production'.\n\nThis endpoint is public (no auth middleware), and any previously unused OTP for the same number is invalidated first.\n\nThe test script captures `demoOtp` into `otpCode` so Verify OTP just works."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.demoOtp) {",
+                  "  pm.collectionVariables.set('otpCode', body.demoOtp);",
+                  "  console.log('OTP captured:', body.demoOtp);",
+                  "} else {",
+                  "  console.warn('No demoOtp in response - check NODE_ENV in .env');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/auth/verify-otp",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"cellNumber\": \"{{cellNumber}}\",\n  \"code\": \"{{otpCode}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/verify-otp", "host": ["{{baseUrl}}"], "path": ["api", "auth", "verify-otp"] },
+            "description": "Marks the OTP row as used. If an Authorization header is present the route ALSO flips `user.isVerified = true` and writes the cell number onto the user - so send the token even though the route does not require it.\n\nOTPs expire after OTP_EXPIRY_MINUTES (10) and are single-use: re-running this without a fresh send-otp returns 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Applications (Applicant)",
+      "item": [
+        {
+          "name": "1. POST /api/applications (create draft)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{baseUrl}}/api/applications", "host": ["{{baseUrl}}"], "path": ["api", "applications"] },
+            "description": "APPLICANT only. Takes no body - it prefills surname/names/idNumber/cellNumber from the user record and auto-creates the 6 document placeholder rows:\n\nREQUIRED: ID Copy, Bank Statements, Affidavit\nOPTIONAL: Proof of Grant, Copy of Death Certificate, Letter of Authority\n\nOnly ONE draft per user is allowed. A second call returns 400 - but note the existing draft comes back in `data`, so the test script still captures the ids either way."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "const app = body.data;",
+                  "if (pm.response.code === 400) {",
+                  "  console.warn('Draft already exists - reusing it. Submit or delete it to test creation again.');",
+                  "}",
+                  "if (app && app.id) {",
+                  "  pm.collectionVariables.set('applicationId', app.id);",
+                  "  (app.documents || []).forEach((d) => {",
+                  "    if (d.type === 'ID_COPY') pm.collectionVariables.set('docIdCopyId', d.id);",
+                  "    if (d.type === 'BANK_STATEMENTS') pm.collectionVariables.set('docBankStatementsId', d.id);",
+                  "    if (d.type === 'AFFIDAVIT') pm.collectionVariables.set('docAffidavitId', d.id);",
+                  "  });",
+                  "  console.log('applicationId:', app.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. PATCH step 1 - Applicant particulars",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"maritalStatus\": \"SINGLE\",\n  \"surname\": \"Doe\",\n  \"names\": \"John\",\n  \"idNumber\": \"9012291111111\",\n  \"cellNumber\": \"{{cellNumber}}\",\n  \"cellVerified\": true,\n  \"postalAddress\": \"PO Box 91, Sandton, 2196\",\n  \"employmentStatus\": \"UNEMPLOYED\",\n  \"employerName\": \"\",\n  \"employerAddress\": \"\",\n  \"workTelNumber\": \"\",\n  \"currentStep\": 2\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "One PATCH per wizard step. Every field is optional - the route whitelists keys, coerces types, and silently drops empty strings/nulls, so partial saves are safe.\n\nmaritalStatus enum: SINGLE | MARRIED | DIVORCED | WIDOWED | SEPARATED\nemploymentStatus enum: EMPLOYED | UNEMPLOYED | SELF_EMPLOYED | PENSIONER | OTHER\n\nOnly DRAFT applications can be patched - after submit this returns 400.\n\nKNOWN BUG: sending `residentialAddress` currently returns 500 (leftover geocode code in src/routes/applications.js:200-215 writes address* columns that no longer exist in the schema). It is deliberately omitted from this body."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "if (pm.response.code === 500) {",
+                  "  console.error('500 - if you added residentialAddress, see the known geocode bug in the request description.');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. PATCH step 2 - Property particulars",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"peopleOnProperty\": 5,\n  \"childrenUnder18\": 2,\n  \"adults\": 2,\n  \"pensionersOver60\": 1,\n  \"waterMeterNumber\": \"WM-556677\",\n  \"electricityMeterNumber\": \"EM-889900\",\n  \"currentStep\": 3\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "Integer fields. `peopleOnProperty` is the divisor used for the per-person income calculation in step 3, so save this before step 3."
+          }
+        },
+        {
+          "name": "4. PATCH step 3 - Household income",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"salary\": 1500.00,\n  \"oldAgePension\": 2000.00,\n  \"disabilityPension\": 0,\n  \"businessIncome\": 0,\n  \"rentingIncome\": 500.00,\n  \"currentStep\": 4\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "Do NOT send totalHouseholdIncome / totalIncomePerPerson - the server recomputes both whenever any of the 5 income fields is present:\n\ntotalHouseholdIncome = salary + oldAgePension + disabilityPension + businessIncome + rentingIncome\ntotalIncomePerPerson = totalHouseholdIncome / peopleOnProperty\n\nWith the sample body: 4000.00 total, 800.00 per person across 5 people."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json().data;",
+                  "console.log('total household income:', d.totalHouseholdIncome, '| per person:', d.totalIncomePerPerson);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. PATCH step 4 - General information",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ownsImmovableProperty\": \"No\",\n  \"isFullTimeOccupant\": \"Yes\",\n  \"incomeBelowThreshold\": \"Yes\",\n  \"hasMunicipalArrears\": \"Yes\",\n  \"hasArrearsArrangement\": \"No\",\n  \"currentStep\": 5\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "Booleans accept true/false, \"true\"/\"false\", or \"Yes\"/\"No\" (the toBool helper) - handy because the UI radio buttons send Yes/No. Anything else is ignored rather than rejected."
+          }
+        },
+        {
+          "name": "6. POST submit BEFORE uploads (expect 400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}/submit", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}", "submit"] },
+            "description": "Deliberate negative test - proves the submit gate works.\n\nAt this point in the run no documents have been uploaded, so this MUST return 400 with a `missing` array naming the three REQUIRED documents.\n\nThe real submit lives in folder `04 - Submit`, after the uploads."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 - blocked until documents are uploaded', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('lists the missing required documents', () => pm.expect(body.missing).to.be.an('array').that.is.not.empty);",
+                  "console.log('missing:', (body.missing || []).join(', '));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/applications/mine",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/applications/mine", "host": ["{{baseUrl}}"], "path": ["api", "applications", "mine"] },
+            "description": "APPLICANT only - all of the caller's applications with documents, newest first. Admins get 403 here; they use /api/admin/applications instead."
+          }
+        },
+        {
+          "name": "GET /api/applications/:id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "Owner OR admin. Swap the token to {{adminToken}} to prove the admin path works, or log in as a different applicant to get the 403."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 - Documents",
+      "item": [
+        {
+          "name": "1. POST upload - ID Copy (REQUIRED)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "Pick a local file. Allowed: .pdf .jpg .jpeg .png .doc .docx | max 10 MB" },
+                { "key": "documentId", "value": "{{docIdCopyId}}", "type": "text", "description": "Fills the existing placeholder row instead of creating a new one" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/documents/{{applicationId}}/upload", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{applicationId}}", "upload"] },
+            "description": "IMPORTANT: do NOT set Content-Type yourself - Postman must generate the multipart boundary. Click the `file` row's value cell and choose a file from disk.\n\nPassing `documentId` updates that placeholder (status -> 'Uploaded') and deletes the old file if you are replacing one. Omitting it creates a brand-new OPTIONAL document row.\n\nFiles land in ./uploads/<applicationId>/<uuid><ext>. Uploads are blocked once the application leaves DRAFT (unless you are an admin)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('placeholder flipped to Uploaded', () => pm.expect(pm.response.json().data.status).to.eql('Uploaded'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. POST upload - Bank Statements (REQUIRED)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] },
+                { "key": "documentId", "value": "{{docBankStatementsId}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/documents/{{applicationId}}/upload", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{applicationId}}", "upload"] }
+          }
+        },
+        {
+          "name": "3. POST upload - Affidavit (REQUIRED)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] },
+                { "key": "documentId", "value": "{{docAffidavitId}}", "type": "text" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/documents/{{applicationId}}/upload", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{applicationId}}", "upload"] }
+          }
+        },
+        {
+          "name": "4. POST upload - extra document (no documentId)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [] },
+                { "key": "type", "value": "PROOF_OF_GRANT", "type": "text", "description": "ID_COPY | BANK_STATEMENTS | AFFIDAVIT | PROOF_OF_GRANT | COPY_OF_DEATH_CERT | LETTER_OF_AUTHORITY | OTHER" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/documents/{{applicationId}}/upload", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{applicationId}}", "upload"] },
+            "description": "Without `documentId` a NEW row is created with importance OPTIONAL and name = the original filename. Defaults to type OTHER if `type` is omitted.\n\nThis row's id is captured into `documentId` so the DELETE request below targets an OPTIONAL document - deleting a REQUIRED one would block the submit step."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.success) pm.collectionVariables.set('documentId', body.data.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/documents/:applicationId (list)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/documents/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{applicationId}}"] },
+            "description": "Owner or admin. Use this to confirm which REQUIRED docs are still 'Pending' before submitting."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const docs = pm.response.json().data || [];",
+                  "const pending = docs.filter(d => d.importance === 'REQUIRED' && d.status !== 'Uploaded');",
+                  "console.log('required still pending:', pending.map(d => d.name).join(', ') || 'none');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/documents/file/:documentId (view inline)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/documents/file/{{docIdCopyId}}", "host": ["{{baseUrl}}"], "path": ["api", "documents", "file", "{{docIdCopyId}}"] },
+            "description": "Streams the file with Content-Disposition: inline. Postman previews images/PDFs in the response pane.\n\nThis is the authenticated way to read files. Note the app ALSO serves /uploads statically with no auth at all - see the security notes."
+          }
+        },
+        {
+          "name": "GET /api/documents/file/:documentId?download=1",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/documents/file/{{docIdCopyId}}?download=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "documents", "file", "{{docIdCopyId}}"],
+              "query": [{ "key": "download", "value": "1" }]
+            },
+            "description": "Same stream, Content-Disposition: attachment. Accepts download=1 or download=true."
+          }
+        },
+        {
+          "name": "DELETE /api/documents/:documentId (reset to Pending)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/documents/{{documentId}}", "host": ["{{baseUrl}}"], "path": ["api", "documents", "{{documentId}}"] },
+            "description": "Despite the verb this does NOT delete the row - it unlinks the file from disk and resets the row to status 'Pending' with null file fields, so the placeholder survives for re-upload.\n\nIt is not blocked on submitted applications, so an applicant can strip a document off a PENDING application."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 - Submit",
+      "item": [
+        {
+          "name": "POST /api/applications/:id/submit",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}/submit", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}", "submit"] },
+            "description": "DRAFT -> PENDING. Runs after the uploads, so both gates are satisfied:\n\n1. All REQUIRED documents have status 'Uploaded'.\n2. surname, idNumber and cellNumber are set.\n\nStamps submittedAt and forces currentStep = 5. After this the application is locked - PATCH returns 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (pm.response.code === 400 && body.missing) {",
+                  "  console.error('Still missing:', body.missing.join(', ') + ' - attach files in folder 03 and re-run.');",
+                  "}",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status is PENDING', () => pm.expect(body.data.status).to.eql('PENDING'));",
+                  "pm.test('submittedAt stamped', () => pm.expect(body.data.submittedAt).to.not.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH after submit (expect 400 - locked)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{applicantToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"surname\": \"ShouldNotSave\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "applications", "{{applicationId}}"] },
+            "description": "Negative test - a submitted application is immutable to the applicant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('400 - only drafts can be updated', () => pm.response.to.have.status(400));"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Admin",
+      "item": [
+        {
+          "name": "GET /api/admin/stats",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/stats", "host": ["{{baseUrl}}"], "path": ["api", "admin", "stats"] },
+            "description": "Dashboard counters: pending, approved, declined, total. Drafts are excluded from `total`."
+          }
+        },
+        {
+          "name": "GET /api/admin/applications (list + filters)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/applications?status=ALL&search=&page=1&limit=10&sortBy=createdAt&sortOrder=desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "applications"],
+              "query": [
+                { "key": "status", "value": "ALL", "description": "PENDING | APPROVED | DECLINED | ALL. Anything other than an exact status falls back to 'all non-draft'." },
+                { "key": "search", "value": "", "description": "Case-insensitive contains across surname, names, idNumber, cellNumber and user email" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10", "description": "Clamped to 1-100" },
+                { "key": "sortBy", "value": "createdAt", "description": "Passed straight to Prisma orderBy - an invalid column name returns 500" },
+                { "key": "sortOrder", "value": "desc", "description": "asc | desc (anything not 'asc' becomes desc)" }
+              ]
+            },
+            "description": "ADMIN only. DRAFT applications are never visible here - the admin only sees work that has been submitted.\n\nThe response is pre-formatted for the table UI: displayId (first 8 chars of the uuid), fullName, and totalIncome already rendered as 'R 4 000,00' in en-ZA (space group separator, comma decimal). `totalIncomeRaw` carries the unformatted number."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.success && body.data.length) {",
+                  "  console.log('rows:', body.data.length, 'of', body.pagination.total);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/admin/applications (pending only)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/admin/applications?status=PENDING&page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "admin", "applications"],
+              "query": [
+                { "key": "status", "value": "PENDING" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "The review queue."
+          }
+        },
+        {
+          "name": "GET /api/admin/applications/:id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/applications/{{applicationId}}", "host": ["{{baseUrl}}"], "path": ["api", "admin", "applications", "{{applicationId}}"] },
+            "description": "Raw (unformatted) application with all documents and the applicant's user record."
+          }
+        },
+        {
+          "name": "PATCH approve application",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"APPROVED\",\n  \"reviewNotes\": \"Income verified below threshold. Approved.\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/admin/applications/{{applicationId}}/status", "host": ["{{baseUrl}}"], "path": ["api", "admin", "applications", "{{applicationId}}", "status"] },
+            "description": "Accepts APPROVED, DECLINED or PENDING (to send one back to the queue). Anything else is 400.\n\nStamps reviewedAt, reviewedBy (the admin's user id) and reviewNotes. There is no guard requiring the application to be PENDING first, so a DRAFT can be approved straight through this endpoint."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH decline application",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"status\": \"DECLINED\",\n  \"reviewNotes\": \"Household income exceeds the R4 200 threshold.\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/admin/applications/{{applicationId}}/status", "host": ["{{baseUrl}}"], "path": ["api", "admin", "applications", "{{applicationId}}", "status"] }
+          }
+        },
+        {
+          "name": "GET /api/admin/stats as APPLICANT (expect 403)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{applicantToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/stats", "host": ["{{baseUrl}}"], "path": ["api", "admin", "stats"] },
+            "description": "Negative test for requireAdmin - a valid token with the wrong role must be rejected."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('403 Forbidden', () => pm.response.to.have.status(403));"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,11 +1,24 @@
 const express = require('express');
-const { PrismaClient } = require('@prisma/client');
-const { authenticate, requireApplicant } = require('../middleware/auth');
+const prisma = require('../lib/prisma');
+const { protect, requireApplicant } = require('../middleware/auth');
+const eligibility = require('../lib/eligibility');
+const reference = require('../lib/reference');
+const saId = require('../lib/saIdNumber');
+const timeline = require('../lib/timeline');
+const meter = require('../lib/meterNumber');
+const geocode = require('../lib/geocode');
+const notify = require('../lib/notify');
+const slots = require('../lib/documentSlots');
+const access = require('../lib/applicationAccess');
+const submission = require('../lib/submission');
+const cache = require('../lib/cache');
 
 const router = express.Router();
-const prisma = new PrismaClient();
 
-router.use(authenticate);
+router.use(...protect);
+
+// Submitting or editing changes the figures the admin dashboard caches.
+router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 
 // Helper: convert empty string / null to undefined so we skip the field
 const clean = (val) => {
@@ -65,24 +78,7 @@ router.post('/', requireApplicant, async (req, res) => {
       include: { documents: true },
     });
 
-    const requiredDocs = [
-      { name: 'ID Copy', type: 'ID_COPY', importance: 'REQUIRED' },
-      { name: 'Bank Statements', type: 'BANK_STATEMENTS', importance: 'REQUIRED' },
-      { name: 'Affidavit', type: 'AFFIDAVIT', importance: 'REQUIRED' },
-      { name: 'Proof of Grant', type: 'PROOF_OF_GRANT', importance: 'OPTIONAL' },
-      { name: 'Copy of Death Certificate', type: 'COPY_OF_DEATH_CERT', importance: 'OPTIONAL' },
-      { name: 'Letter of Authority', type: 'LETTER_OF_AUTHORITY', importance: 'OPTIONAL' },
-    ];
-
-    await prisma.document.createMany({
-      data: requiredDocs.map((d) => ({
-        applicationId: application.id,
-        name: d.name,
-        type: d.type,
-        importance: d.importance,
-        status: 'Pending',
-      })),
-    });
+    await prisma.document.createMany({ data: slots.seedRows(application.id) });
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
@@ -94,8 +90,7 @@ router.post('/', requireApplicant, async (req, res) => {
     console.error('Create application error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create application',
-      details: error.message,
+      message: 'We could not start the application. Please try again.',
     });
   }
 });
@@ -112,7 +107,7 @@ router.get('/mine', requireApplicant, async (req, res) => {
     res.json({ success: true, data: applications });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ success: false, message: 'Failed to fetch applications' });
+    res.status(500).json({ success: false, message: 'We could not load the applications. Please try again.' });
   }
 });
 
@@ -130,48 +125,102 @@ router.get('/:id', async (req, res) => {
     });
 
     if (!application) {
-      return res.status(404).json({ success: false, message: 'Application not found' });
+      return res.status(404).json({ success: false, message: 'We could not find that application.' });
     }
 
-    if (req.user.role !== 'ADMIN' && application.userId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
+    if (!access.canView(req.user, application)) {
+      return res.status(404).json({ success: false, message: 'We could not find that application.' });
     }
 
     res.json({ success: true, data: application });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ success: false, message: 'Failed to fetch application' });
+    res.status(500).json({ success: false, message: 'We could not load that application. Please try again.' });
   }
 });
 
-// Update application step data
-router.patch('/:id', requireApplicant, async (req, res) => {
+/**
+ * Stage history for one application.
+ *
+ * Owner or admin. Applicants see a filtered event list — they are told that a
+ * municipal official acted, never which one.
+ */
+router.get('/:id/timeline', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
+      include: { documents: true },
     });
 
     if (!application) {
-      return res.status(404).json({ success: false, message: 'Application not found' });
+      return res.status(404).json({ success: false, message: 'We could not find that application.' });
     }
 
-    if (application.userId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
+    if (!access.canView(req.user, application)) {
+      return res.status(404).json({ success: false, message: 'We could not find that application.' });
     }
 
-    if (application.status !== 'DRAFT') {
-      return res.status(400).json({ success: false, message: 'Only draft applications can be updated' });
-    }
+    const auditRows = await prisma.auditLog.findMany({
+      where: { entityType: 'Application', entityId: application.id },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
 
+    res.json({
+      success: true,
+      data: {
+        status: application.status,
+        reference: application.reference,
+        stages: timeline.stages(application),
+        nextAction: timeline.nextAction(application),
+        events: timeline.events(auditRows, { forApplicant: req.user.role !== 'ADMIN' }),
+        documents: timeline.documentProgress(application.documents),
+        reviewNotes: application.reviewNotes,
+        submittedAt: application.submittedAt,
+        reviewedAt: application.reviewedAt,
+      },
+    });
+  } catch (error) {
+    console.error('timeline error:', error);
+    res.status(500).json({ success: false, message: 'We could not load the history for this application.' });
+  }
+});
+
+/**
+ * Update the wizard.
+ *
+ * Reached by the resident filling in their own form and by a ward councillor
+ * capturing one at a household — both go through exactly the same validation, so
+ * a field-captured application is held to the identical standard. Who is allowed
+ * is decided in one place; see lib/applicationAccess.js.
+ */
+router.patch('/:id', access.loadFor('edit'), async (req, res) => {
+  try {
+    const application = req.application;
     const body = req.body || {};
     const updateData = {};
+
+    if (body.idNumber !== undefined && clean(body.idNumber) !== undefined) {
+      const check = saId.validate(body.idNumber);
+      if (!check.valid) return res.status(400).json({ success: false, message: check.reason });
+    }
+
+    // Meter numbers are length-checked only; see lib/meterNumber for why.
+    const meterChecks = {};
+    for (const [key, kind] of [['waterMeterNumber', 'water'], ['electricityMeterNumber', 'electricity']]) {
+      if (body[key] === undefined) continue;
+      const check = meter.validate(body[key], { kind });
+      if (!check.valid) return res.status(400).json({ success: false, message: check.reason });
+      meterChecks[key] = check.value;
+    }
 
     // String fields
     const stringKeys = [
       'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
       'residentialAddress', 'postalAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
-      'addressFormatted', 'addressPlaceId',
+      'wardNumber', 'municipalAccountNumber', 'eskomAccountNumber',
+      'otherPropertyDetails', 'incomeExclusions',
     ];
     stringKeys.forEach((key) => {
       if (body[key] !== undefined) {
@@ -180,37 +229,111 @@ router.patch('/:id', requireApplicant, async (req, res) => {
       }
     });
 
-    // Address coordinates
-    if (body.addressLatitude !== undefined) {
-      const lat = toDecimal(body.addressLatitude);
-      if (lat !== undefined) updateData.addressLatitude = lat;
-    }
-    if (body.addressLongitude !== undefined) {
-      const lng = toDecimal(body.addressLongitude);
-      if (lng !== undefined) updateData.addressLongitude = lng;
-    }
-    if (body.addressVerified !== undefined) {
-      const b = toBool(body.addressVerified);
-      if (b !== undefined) {
-        updateData.addressVerified = b;
-        if (b) updateData.addressVerifiedAt = new Date();
+    /**
+     * Enumerated answers.
+     *
+     * Whitelisted rather than passed through: an unknown value would be rejected
+     * by Postgres as a 500 rather than as something the applicant can fix.
+     */
+    const ENUMS = {
+      tenure: ['OWNER', 'TENANT', 'OCCUPIER'],
+      incomeEvidence: ['PROOF_OF_INCOME', 'BANK_STATEMENTS', 'AFFIDAVIT'],
+      applicantCategory: ['STANDARD', 'PENSIONER', 'DECEASED_ESTATE', 'CHILD_HEADED', 'DISABLED'],
+    };
+    for (const [key, allowed] of Object.entries(ENUMS)) {
+      if (body[key] === undefined) continue;
+      const value = clean(body[key]);
+      if (value === undefined) continue;
+      if (!allowed.includes(value)) {
+        return res.status(400).json({ success: false, message: `${key} must be one of: ${allowed.join(', ')}` });
       }
+      updateData[key] = value;
     }
 
-    // If residential address text changed without new coordinates, clear verification
-    if (
-      body.residentialAddress !== undefined &&
-      body.addressLatitude === undefined &&
-      body.addressVerified === undefined
-    ) {
-      const newAddr = clean(body.residentialAddress);
-      if (newAddr !== undefined && newAddr !== application.residentialAddress) {
-        updateData.addressVerified = false;
-        updateData.addressLatitude = null;
-        updateData.addressLongitude = null;
-        updateData.addressFormatted = null;
-        updateData.addressPlaceId = null;
-        updateData.addressVerifiedAt = null;
+    /**
+     * Consent.
+     *
+     * Stamped the moment all three are given. Verification cannot lawfully begin
+     * without them, and "when did they agree" is the question that survives a
+     * dispute — a bare boolean does not answer it.
+     */
+    const CONSENTS = ['consentSiteVisit', 'consentDataMatching', 'declarationTruthful'];
+    let consentTouched = false;
+    CONSENTS.forEach((key) => {
+      const b = toBool(body[key]);
+      if (b !== undefined) { updateData[key] = b; consentTouched = true; }
+    });
+    if (consentTouched) {
+      const merged = { ...application, ...updateData };
+      updateData.consentGivenAt = CONSENTS.every((k) => merged[k]) ? new Date() : null;
+    }
+
+    // Normalised meter values win over the raw string captured above.
+    Object.entries(meterChecks).forEach(([key, value]) => { updateData[key] = value; });
+
+    /**
+     * Residential coordinates.
+     *
+     * Latitude and longitude only ever move together — a lone latitude would
+     * place the household somewhere meaningless. When both arrive they are
+     * checked against the southern-African bounding box, and the capture is
+     * timestamped so a reviewer can see how fresh it is.
+     */
+    const hasLat = body.addressLatitude !== undefined;
+    const hasLon = body.addressLongitude !== undefined;
+
+    if (hasLat !== hasLon) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude must be provided together.',
+      });
+    }
+
+    if (hasLat && hasLon) {
+      const lat = body.addressLatitude === null || body.addressLatitude === '' ? null : Number(body.addressLatitude);
+      const lon = body.addressLongitude === null || body.addressLongitude === '' ? null : Number(body.addressLongitude);
+
+      if (lat === null && lon === null) {
+        // Explicitly clearing the pin.
+        Object.assign(updateData, {
+          addressLatitude: null, addressLongitude: null, addressFormatted: null,
+          addressSource: null, addressAccuracyM: null, addressVerifiedAt: null,
+        });
+      } else if (!geocode.withinSouthAfrica(lat, lon)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Those coordinates are outside South Africa. The property must be in the municipal area.',
+        });
+      } else {
+        updateData.addressLatitude = geocode.round7(lat);
+        updateData.addressLongitude = geocode.round7(lon);
+        updateData.addressVerifiedAt = new Date();
+
+        const source = String(body.addressSource || '').toUpperCase();
+        updateData.addressSource = ['DEVICE', 'SEARCH', 'MANUAL'].includes(source) ? source : 'MANUAL';
+
+        if (body.addressFormatted !== undefined) {
+          updateData.addressFormatted = clean(body.addressFormatted) ?? null;
+        }
+        if (body.addressAccuracyM !== undefined) {
+          const accuracy = toInt(body.addressAccuracyM);
+          updateData.addressAccuracyM = accuracy !== undefined ? Math.min(accuracy, 100000) : null;
+        }
+      }
+    } else if (body.residentialAddress !== undefined) {
+      /**
+       * The address text changed on its own. The old pin now points at the
+       * previous address, which is worse than having no pin — so drop it.
+       *
+       * This is the logic that used to write columns the schema no longer had,
+       * making every step-1 save fail with a 500. The columns exist again now.
+       */
+      const nextAddress = clean(body.residentialAddress) ?? null;
+      if (nextAddress !== application.residentialAddress && application.addressLatitude !== null) {
+        Object.assign(updateData, {
+          addressLatitude: null, addressLongitude: null, addressFormatted: null,
+          addressSource: null, addressAccuracyM: null, addressVerifiedAt: null,
+        });
       }
     }
 
@@ -239,7 +362,7 @@ router.patch('/:id', requireApplicant, async (req, res) => {
 
     // Yes/No booleans
     ['ownsImmovableProperty', 'isFullTimeOccupant', 'incomeBelowThreshold',
-      'hasMunicipalArrears', 'hasArrearsArrangement'].forEach((key) => {
+      'hasMunicipalArrears', 'hasArrearsArrangement', 'ownsOtherProperty'].forEach((key) => {
       if (body[key] !== undefined) {
         const b = toBool(body[key]);
         if (b !== undefined) updateData[key] = b;
@@ -291,77 +414,82 @@ router.patch('/:id', requireApplicant, async (req, res) => {
       include: { documents: true },
     });
 
+    /**
+     * Keep the document checklist in step with the answers.
+     *
+     * Changing tenure from owner to tenant swaps a title deed for a lease;
+     * declaring a deceased estate adds a death certificate. Doing this here
+     * rather than in the interface means the checklist is correct however the
+     * answer was changed — the applicant's wizard, a councillor's capture
+     * screen, or an administrator's edit.
+     *
+     * Only ever runs on drafts. A submitted application's obligations are frozen.
+     */
+    const AFFECTS_CHECKLIST = ['tenure', 'applicantCategory'];
+    if (updated.status === 'DRAFT' && AFFECTS_CHECKLIST.some((k) => k in updateData)) {
+      const { toCreate, toDelete, toUpdate } = slots.reconcile(updated.documents, updated);
+
+      if (toCreate.length || toDelete.length || toUpdate.length) {
+        await prisma.$transaction([
+          ...(toCreate.length ? [prisma.document.createMany({ data: toCreate })] : []),
+          // Only ever removes empty slots — see lib/documentSlots.reconcile.
+          ...(toDelete.length ? [prisma.document.deleteMany({ where: { id: { in: toDelete } } })] : []),
+          ...toUpdate.map((u) => prisma.document.update({
+            where: { id: u.id },
+            data: { importance: u.importance, requirementGroup: u.requirementGroup },
+          })),
+        ]);
+
+        const refreshed = await prisma.application.findUnique({
+          where: { id: updated.id },
+          include: { documents: true },
+        });
+        return res.json({ success: true, data: refreshed, checklistChanged: true });
+      }
+    }
+
     res.json({ success: true, data: updated });
   } catch (error) {
     console.error('Update application error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update application',
-      details: error.message,
+      message: 'We could not save your changes. Please try again.',
     });
   }
 });
 
-// Submit application
-router.post('/:id/submit', requireApplicant, async (req, res) => {
+/**
+ * Submit for review.
+ *
+ * The readiness rules and everything that follows a submission live in
+ * lib/submission.js, shared with the councillor's field capture so both routes
+ * produce an identical record.
+ */
+router.post('/:id/submit', access.loadFor('submit', { include: { documents: true } }), async (req, res) => {
   try {
-    const application = await prisma.application.findUnique({
-      where: { id: req.params.id },
-      include: { documents: true },
-    });
+    const application = req.application;
 
-    if (!application) {
-      return res.status(404).json({ success: false, message: 'Application not found' });
-    }
-
-    if (application.userId !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    if (application.status !== 'DRAFT') {
-      return res.status(400).json({ success: false, message: 'Application already submitted' });
-    }
-
-    const missingRequired = application.documents.filter(
-      (d) => d.importance === 'REQUIRED' && d.status !== 'Uploaded'
-    );
-
-    if (missingRequired.length > 0) {
+    const check = submission.readiness(application);
+    if (!check.ready) {
       return res.status(400).json({
         success: false,
-        message: 'Please upload all required documents before submitting',
-        missing: missingRequired.map((d) => d.name),
+        message: check.problems.join(' '),
+        missing: check.missingDocuments,
       });
     }
 
-    if (!application.idNumber || !application.cellNumber || !application.surname) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please complete all required applicant particulars (surname, ID number, cell number)',
-      });
-    }
-
-    const updated = await prisma.application.update({
-      where: { id: req.params.id },
-      data: {
-        status: 'PENDING',
-        submittedAt: new Date(),
-        currentStep: 5,
-      },
-      include: { documents: true },
-    });
+    const updated = await submission.submit(application, { actor: req.user });
 
     res.json({
       success: true,
       message: 'Application submitted successfully',
-      data: updated,
+      data: { ...updated, eligibility: eligibility.assess(updated) },
     });
   } catch (error) {
     console.error('Submit error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to submit application',
-      details: error.message,
+      message: 'We could not submit the application. Please try again.',
     });
   }
 });

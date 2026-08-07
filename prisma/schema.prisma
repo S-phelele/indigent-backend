@@ -7,9 +7,96 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Who does what.
+///
+/// The process is a chain, and the roles exist so that no one person can carry
+/// an application from the door to an approval. Capture, verify and decide are
+/// deliberately three different pairs of hands.
 enum Role {
   APPLICANT
+
+  /// Ward councillor. Captures applications door to door for residents who
+  /// cannot complete the form themselves.
+  COUNCILLOR
+
+  /// Front desk. Captures walk-in applications and collects documents against
+  /// the checklist. Cannot verify and cannot decide.
+  CAPTURE_OFFICER
+
+  /// Reviews a captured application against the qualifying criteria, records
+  /// external checks and site visits, and recommends an outcome. Recommends —
+  /// does not decide.
+  VERIFICATION_OFFICER
+
+  /// Full authority, including the final approve or decline.
   ADMIN
+}
+
+/// How the household holds the property. A tenant is billed for services but
+/// not for rates, so the relief they can be granted is a different set.
+enum Tenure {
+  OWNER
+  TENANT
+  OCCUPIER
+}
+
+/// Which of the three evidence paths the applicant is using. Any one is
+/// sufficient — see src/lib/documentSlots.js.
+enum IncomeEvidence {
+  PROOF_OF_INCOME
+  BANK_STATEMENTS
+  AFFIDAVIT
+}
+
+/// Drives the conditional document checklist and the assessment route.
+enum ApplicantCategory {
+  STANDARD
+  PENSIONER
+  DECEASED_ESTATE
+  CHILD_HEADED
+  DISABLED
+}
+
+/// What a verification officer concluded. The decision itself stays with an
+/// administrator; this is the recommendation that reaches them.
+enum Recommendation {
+  APPROVE
+  REJECT
+  ESCALATE
+}
+
+enum VerificationStage {
+  NOT_STARTED
+  IN_VERIFICATION
+  AWAITING_INFORMATION
+  RECOMMENDED
+  COMPLETE
+}
+
+enum SiteVisitOutcome {
+  SCHEDULED
+  VERIFIED
+  NO_ACCESS
+  OCCUPANT_ABSENT
+  ADDRESS_NOT_FOUND
+  DETAILS_DISPUTED
+}
+
+enum CheckSource {
+  SARS
+  UIF
+  SASSA
+  CREDIT_BUREAU
+  DEEDS_OFFICE
+  MUNICIPAL_ACCOUNT
+  OTHER
+}
+
+enum CheckOutcome {
+  PASS
+  FAIL
+  INCONCLUSIVE
+  NOT_APPLICABLE
 }
 
 enum ApplicationStatus {
@@ -42,6 +129,25 @@ enum DocumentType {
   PROOF_OF_GRANT
   COPY_OF_DEATH_CERT
   LETTER_OF_AUTHORITY
+  /// Payslip, employer letter, or a sworn statement of income for the informally
+  /// employed. Together with PROOF_OF_GRANT this satisfies the financial evidence
+  /// requirement — see src/lib/documentSlots.js.
+  PROOF_OF_INCOME
+
+  // Property and account
+  PROOF_OF_OWNERSHIP
+  LEASE_AGREEMENT
+  MUNICIPAL_STATEMENT
+
+  // Conditional on the applicant's category
+  BIRTH_CERTIFICATE
+  GUARDIANSHIP_ORDER
+  SOCIAL_WORKER_LETTER
+  DIVORCE_DECREE
+  MARRIAGE_CERTIFICATE
+  DISABILITY_CERTIFICATE
+  COUNCILLOR_MOTIVATION
+
   OTHER
 }
 
@@ -60,23 +166,60 @@ model User {
   cellNumber    String?
   idNumber      String?  @unique
   isVerified    Boolean  @default(false)
+
+  /// Ward this councillor serves, e.g. "Ward 12". Councillors only.
+  ward          String?
+
+  /// Set when an account is created by somebody else and the password was sent
+  /// by SMS. Sign-in works, but every route except "change my password" is
+  /// refused until it is cleared — a password a third party has read is not a
+  /// password.
+  mustChangePassword Boolean @default(false)
+
+  /// Councillors leave office. Deactivating keeps their captures, and the audit
+  /// trail attached to them, while stopping them signing in. Deleting the account
+  /// would orphan every household they registered.
+  isActive      Boolean  @default(true)
+
+  /// Staff member who created this account, if it was not self-registration.
+  /// No foreign key on purpose: a councillor may be removed long after the
+  /// residents they signed up, and those residents must not go with them.
+  registeredById String?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   applications  Application[]
   otps          Otp[]
+  notifications Notification[]
+  captured      Application[]  @relation("CapturedBy")
+
+  @@index([role, isActive])
+}
+
+enum OtpPurpose {
+  VERIFY_CELL
+  PASSWORD_RESET
 }
 
 model Otp {
-  id        String   @id @default(uuid())
-  userId    String?
+  id         String     @id @default(uuid())
+  userId     String?
   cellNumber String
-  code      String
-  expiresAt DateTime
-  used      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  /// bcrypt hash — a plaintext code in this table would let anyone with read
+  /// access authenticate as any cell number.
+  codeHash   String
+  purpose    OtpPurpose @default(VERIFY_CELL)
+  /// Wrong guesses. The code is burned once this passes the allowed limit, so a
+  /// six-digit code cannot be brute-forced within its lifetime.
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  used       Boolean    @default(false)
+  createdAt  DateTime   @default(now())
 
-  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([cellNumber, purpose])
 }
 
 model Application {
@@ -94,10 +237,33 @@ model Application {
   cellNumber            String?
   residentialAddress    String?
   postalAddress         String?
+
+  /// Where the property actually is.
+  ///
+  /// Captured either from the applicant's device or by looking up the address
+  /// they typed. Stored to 7 decimal places — roughly a centimetre, which is far
+  /// more than needed, but it costs nothing and avoids rounding a household onto
+  /// a neighbour's stand.
+  ///
+  /// These coordinates locate a poor household's home. Treat them as personal
+  /// data: never expose them on an unauthenticated route, and never log them.
+  addressLatitude       Decimal?          @db.Decimal(10, 7)
+  addressLongitude      Decimal?          @db.Decimal(10, 7)
+  /// The address as the geocoder resolved it, kept alongside what was typed.
+  addressFormatted      String?
+  /// DEVICE (browser geolocation) | SEARCH (typed then looked up) | MANUAL
+  addressSource         String?
+  /// Device-reported accuracy in metres. A 2 km reading is a network fix, not GPS.
+  addressAccuracyM      Int?
+  addressVerifiedAt     DateTime?
   employerName          String?
   employerAddress       String?
   workTelNumber         String?
   cellVerified          Boolean           @default(false)
+
+  /// Ward the property falls in, as stated by the applicant or set at capture.
+  /// Distinct from capturedWard, which records who did the capturing.
+  wardNumber            String?
 
   // Step 2 - Property Particulars
   peopleOnProperty      Int?
@@ -106,6 +272,24 @@ model Application {
   pensionersOver60      Int?
   waterMeterNumber      String?
   electricityMeterNumber String?
+
+  /// The municipal account the relief would be applied to. Without it an
+  /// approval cannot actually be actioned by the finance department.
+  municipalAccountNumber String?
+  /// Used where electricity is billed by Eskom rather than the municipality —
+  /// common in areas the municipality does not reticulate.
+  eskomAccountNumber    String?
+
+  /// Owner, tenant or occupier. A tenant may claim only the service charges
+  /// they are billed for; rates relief belongs to the owner, so granting it to
+  /// a tenant would be paying the wrong person.
+  tenure                Tenure?
+
+  /// Any other property held anywhere in the country. Declaring one is not
+  /// automatically disqualifying — an inherited plot with no services is not
+  /// wealth — but it must be declared and seen.
+  ownsOtherProperty     Boolean?
+  otherPropertyDetails  String?
 
   // Step 3 - Household Income
   salary                Decimal?          @db.Decimal(12, 2)
@@ -123,20 +307,321 @@ model Application {
   hasMunicipalArrears   Boolean?
   hasArrearsArrangement Boolean?
 
+  /// Threshold in force when this was submitted. Recorded so a later change to
+  /// the municipal figure does not retroactively change how a decided
+  /// application reads.
+  incomeThresholdApplied Decimal?         @db.Decimal(12, 2)
+
+  // --- Evidence and category ------------------------------------------------
+
+  /// Which of the three income-evidence routes the household is using. Chosen
+  /// by the applicant, because only they know which one they can actually
+  /// produce; it decides which documents the checklist then asks for.
+  incomeEvidence        IncomeEvidence?
+
+  /// Income the policy tells us to disregard — child support grants, NSFAS,
+  /// informal family support, once-off lump sums. Free text, because the list
+  /// varies by municipality and a fixed set would silently drop the rest.
+  incomeExclusions      String?
+
+  /// Drives the conditional document checklist. A deceased estate needs a death
+  /// certificate and a letter of authority; a child-headed household needs a
+  /// guardianship order. Asking everybody for all of them would be absurd.
+  applicantCategory     ApplicantCategory @default(STANDARD)
+
+  // --- Consent --------------------------------------------------------------
+  //
+  // These are legal preconditions, not preferences. Verification cannot lawfully
+  // proceed without them, so each is stored with the moment it was given rather
+  // than as a bare boolean — "did they agree" and "when did they agree" are
+  // different questions and only the second survives a dispute.
+
+  /// Consent for a municipal officer to enter and inspect the property.
+  consentSiteVisit      Boolean           @default(false)
+  /// Consent to match the declaration against SARS, UIF, SASSA and credit data.
+  consentDataMatching   Boolean           @default(false)
+  /// The declaration that everything stated is true, made under oath.
+  declarationTruthful   Boolean           @default(false)
+  consentGivenAt        DateTime?
+
+  // --- Verification ---------------------------------------------------------
+
+  verificationStage     VerificationStage @default(NOT_STARTED)
+  /// Counts site visits that did not result in a verification. Three failures
+  /// disqualifies — but only after three genuine attempts, which is why this is
+  /// derived from SiteVisit rows rather than incremented by hand.
+  failedVisitCount      Int               @default(0)
+
+  recommendation        Recommendation?
+  recommendedById       String?
+  recommendedAt         DateTime?
+  recommendationNotes   String?
+
+  /// Set when an officer captured this for somebody who could not complete it
+  /// themselves — an applicant who cannot read, or cannot write. The witness is
+  /// the protection: somebody other than the officer confirms that what was
+  /// captured is what the applicant said.
+  capturedOnBehalf      Boolean           @default(false)
+  witnessName           String?
+  witnessIdNumber       String?
+  witnessSignedAt       DateTime?
+
+  /// Human-readable reference, e.g. IND-2026-00042. Assigned on submission —
+  /// drafts have none, because nobody quotes a reference for an unsubmitted form.
+  reference             String?           @unique
+
+  /// Highest service-level escalation already announced for this application.
+  /// The scheduled check reads this so a breached application is reported once,
+  /// not on every run. Cleared whenever the status changes.
+  slaNotifiedLevel      String?
+
   // Meta
   submittedAt           DateTime?
   reviewedAt            DateTime?
   reviewedBy            String?
   reviewNotes           String?
+
+  /// How this application reached the register.
+  ///   SELF       — the resident completed it themselves
+  ///   COUNCILLOR — captured door to door by a ward councillor
+  ///   ADMIN      — captured at the municipal office
+  /// Reviewers need this: an application the resident never typed carries a
+  /// different assurance, and it is the first thing to check when a capture
+  /// campaign produces a suspicious cluster of approvals.
+  captureChannel        String            @default("SELF")
+  capturedById          String?
+  capturedAt            DateTime?
+  /// Ward recorded at capture. Kept on the application rather than read from the
+  /// councillor, so re-warding staff does not rewrite historic geography.
+  capturedWard          String?
+
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
   user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  capturedBy            User?             @relation("CapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
   documents             Document[]
+  household             HouseholdMember[]
+  siteVisits            SiteVisit[]
+  checks                VerificationCheck[]
 
   @@index([status])
   @@index([userId])
   @@index([idNumber])
+  @@index([capturedById])
+  @@index([captureChannel])
+  @@index([verificationStage])
+  @@index([wardNumber])
+  /// The review queue's default ordering. Without this the list page sorts the
+  /// whole table on every request.
+  @@index([status, submittedAt])
+  @@index([reference])
+}
+
+/// Everyone living on the property.
+///
+/// The register assesses a household, not a person: income is measured per head,
+/// so who lives there decides whether the same rand figure qualifies or not.
+/// Counting them in a single number was never enough — a reviewer has to be able
+/// to see the eight-year-old and the grandmother separately.
+model HouseholdMember {
+  id            String   @id @default(uuid())
+  applicationId String
+
+  fullName      String
+  /// Relationship to the applicant: spouse, child, parent, grandchild, lodger…
+  relationship  String?
+  /// Recorded where known. Optional because informal households frequently do
+  /// not have documents for every child living there, and refusing the whole
+  /// application over it would defeat the purpose.
+  idNumber      String?
+  dateOfBirth   DateTime?
+  /// Captured directly when no date of birth is available.
+  age           Int?
+  /// This member's own monthly income, if any. Rolls into the household total.
+  monthlyIncome Decimal? @db.Decimal(12, 2)
+  isDependant   Boolean  @default(true)
+  notes         String?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+/// A visit to the property to confirm the household actually lives as declared.
+///
+/// Attempts are rows, not a counter, because "we tried three times" is a claim
+/// somebody may have to defend. Each attempt records when, who, and what was
+/// found, so a disqualification for non-access can be shown to have been earned.
+model SiteVisit {
+  id            String           @id @default(uuid())
+  applicationId String
+
+  /// 1, 2, 3 — allocated on creation. Three failures disqualifies.
+  attempt       Int
+  scheduledFor  DateTime?
+  visitedAt     DateTime?
+  outcome       SiteVisitOutcome @default(SCHEDULED)
+
+  officerId     String?
+  officerName   String?
+  findings      String?
+  /// Where the officer actually stood, so a visit cannot be recorded from a desk.
+  latitude      Decimal?         @db.Decimal(10, 7)
+  longitude     Decimal?         @db.Decimal(10, 7)
+
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  application   Application      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@unique([applicationId, attempt])
+  @@index([applicationId])
+  @@index([outcome])
+}
+
+/// One external check against a third party.
+///
+/// The integrations themselves are not built — SARS, UIF, SASSA and the credit
+/// bureaux each need a contract and credentials the municipality holds, not this
+/// codebase. What is built is the record: an officer runs the check on whatever
+/// system they have access to, and logs here what was asked and what came back.
+/// That is what an audit needs, and it is the seam an API drops into later.
+model VerificationCheck {
+  id            String       @id @default(uuid())
+  applicationId String
+
+  source        CheckSource
+  outcome       CheckOutcome @default(INCONCLUSIVE)
+  /// The reference the external system gave, so the check can be re-found.
+  externalRef   String?
+  findings      String?
+  /// Income the check revealed, where it revealed one. Compared against the
+  /// declaration — a mismatch here is the single most useful signal the process
+  /// produces.
+  amountFound   Decimal?     @db.Decimal(12, 2)
+
+  officerId     String?
+  officerName   String?
+  checkedAt     DateTime     @default(now())
+
+  application   Application  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([source])
+}
+
+enum NotificationType {
+  // Sent to applicants
+  APPLICATION_SUBMITTED
+  APPLICATION_APPROVED
+  APPLICATION_DECLINED
+  APPLICATION_REOPENED
+  DOCUMENT_REJECTED
+  DOCUMENT_ACCEPTED
+  APPLICATION_UPDATED
+  WELCOME
+
+  ACCOUNT_CREATED_FOR_YOU
+  SITE_VISIT_SCHEDULED
+  SITE_VISIT_FAILED
+  INFORMATION_REQUESTED
+
+  // Sent to administrators
+  NEW_REGISTRATION
+  NEW_APPLICATION
+  APPLICATION_AWAITING_REVIEW
+  APPLICATION_AT_RISK
+  APPLICATION_BREACHED
+  COUNCILLOR_CAPTURE
+  RECOMMENDATION_READY
+}
+
+/// In-app notifications.
+///
+/// One row per recipient. Admin-wide events are fanned out to every
+/// administrator rather than stored once with a shared read flag, so each person
+/// dismisses their own copy — which is what people expect from an inbox.
+model Notification {
+  id         String           @id @default(uuid())
+  userId     String
+  type       NotificationType
+  title      String
+  body       String?
+  /// Where clicking the notification should take the recipient, relative to
+  /// whichever portal they are in.
+  link       String?
+  entityType String?
+  entityId   String?
+  readAt     DateTime?
+  createdAt  DateTime         @default(now())
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+/// Append-only record of who did what. Deliberately NOT related to User with a
+/// foreign key: audit entries must survive deletion of the account that caused
+/// them, so the actor is denormalised onto the row.
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  userEmail  String?
+  userRole   String?
+  action     String
+  entityType String?
+  entityId   String?
+  details    String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+  @@index([userEmail])
+}
+
+enum SmsStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+/// Every SMS the register has tried to send.
+///
+/// Kept for two reasons. Operationally, "we never told them" is a common dispute
+/// in a municipal process and this is the answer to it. Practically, the console
+/// provider used in development writes here too, so messages can be read in the
+/// admin portal instead of scrolling back through server logs.
+///
+/// The body is stored, so it must never contain a live credential. Temporary
+/// passwords are redacted before the row is written — see src/lib/sms.js.
+model SmsMessage {
+  id         String    @id @default(uuid())
+  /// Normalised to +27… so a number is one number however it was typed.
+  toNumber   String
+  body       String
+  /// WELCOME_CREDENTIALS, APPLICATION_SUBMITTED, OTP, …
+  purpose    String
+  status     SmsStatus @default(QUEUED)
+  provider   String
+  /// Whatever the gateway calls this message, for reconciling against its logs.
+  providerRef String?
+  error      String?
+  userId     String?
+  entityType String?
+  entityId   String?
+  segments   Int       @default(1)
+  sentAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([toNumber])
+  @@index([createdAt])
+  @@index([status])
 }
 
 model Document {
@@ -145,6 +630,17 @@ model Document {
   name          String
   type          DocumentType
   importance    DocumentImportance  @default(REQUIRED)
+
+  /// Names a set of documents where any ONE satisfies the requirement.
+  ///
+  /// "financial_evidence" is proof of income OR proof of grant: a pensioner has
+  /// a SASSA letter and no payslip, a domestic worker has the opposite, and
+  /// neither necessarily has a bank account. Demanding a specific one of these
+  /// excludes exactly the households the register exists to help.
+  ///
+  /// Slots in a group carry importance = OPTIONAL individually; the group as a
+  /// whole is what is mandatory. See src/lib/documentSlots.js.
+  requirementGroup String?
   fileName      String?
   filePath      String?
   mimeType      String?
