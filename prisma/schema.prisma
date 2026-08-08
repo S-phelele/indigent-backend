@@ -328,13 +328,45 @@ model Application {
   currentStep           Int               @default(1)
 
   // Step 1 - Applicant Particulars
+  /// Mr, Mrs, Ms, Dr, Rev and so on. Free text rather than an enum: the list of
+  /// titles people actually use is longer than any list a form should impose,
+  /// and getting somebody's title wrong on a municipal letter is a small insult
+  /// that is entirely avoidable.
+  title                 String?
   maritalStatus         MaritalStatus?
   surname               String?
   names                 String?
   idNumber              String?
   cellNumber            String?
   residentialAddress    String?
+
+  /// The postal address as one line, composed from the parts below.
+  ///
+  /// Kept because letters, exports and the printable form all want a single
+  /// block of text. Written by the server from the structured fields so the two
+  /// can never disagree — an address edited in parts but printed from a stale
+  /// single field is how post goes to the wrong house.
   postalAddress         String?
+
+  // --- Postal address, in the South African Post Office's parts --------------
+  //
+  // Structured rather than one free-text box because the parts are what the Post
+  // Office actually sorts on, and a four-digit postal code sitting in the middle
+  // of a sentence cannot be validated, grouped or corrected.
+  //
+  // Most households give the same address they live at, so the checkbox below
+  // means they answer once. When it is set the parts are left empty and the
+  // residential address is used — storing a copy would leave two answers to keep
+  // in step, and they would drift the first time one was corrected.
+  postalSameAsResidential Boolean         @default(false)
+  /// Street number and name, or a PO Box / Private Bag number.
+  postalLine1           String?
+  /// Complex, unit or farm name. Optional, and usually blank.
+  postalLine2           String?
+  postalSuburb          String?
+  postalCity            String?
+  /// Four digits. South African postal codes are always exactly four.
+  postalCode            String?
 
   /// Where the property actually is.
   ///
@@ -741,6 +773,12 @@ enum NotificationType {
   /// A staff account was locked by repeated failed sign-ins. Worth an
   /// administrator's attention while it is happening, not at audit time.
   ACCOUNT_LOCKED
+
+  /// Any movement in the approval chain — a recommendation, an assessment, a
+  /// sign-off, a refusal or a return. Administrators are accountable for the
+  /// register but sit in no stage's queue, so without this the only way to learn
+  /// that a supervisor signed something off was to go looking for it.
+  APPROVAL_ACTIVITY
 }
 
 /// In-app notifications.

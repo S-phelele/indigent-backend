@@ -799,7 +799,7 @@ router.get('/applications/:id', async (req, res) => {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
       include: {
-        documents: true,
+        documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] },
         user: {
           select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true, idNumber: true },
         },
@@ -867,7 +867,7 @@ router.patch('/applications/:id/status', async (req, res) => {
         // A decision, or a return to the queue, restarts the service clock.
         slaNotifiedLevel: null,
       },
-      include: { documents: true, user: { select: { email: true, firstName: true, lastName: true, cellNumber: true } } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, user: { select: { email: true, firstName: true, lastName: true, cellNumber: true } } },
     });
 
     if (status === 'APPROVED' || status === 'DECLINED') {
@@ -1160,7 +1160,7 @@ router.delete('/applicants/:id', async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.params.id },
-      include: { applications: { include: { documents: true } } },
+      include: { applications: { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } } } },
     });
 
     if (!user) return res.status(404).json({ success: false, message: 'We could not find that person.' });
@@ -1256,7 +1256,7 @@ router.post('/applications', async (req, res) => {
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     res.status(201).json({ success: true, message: 'Application created', data: full });
@@ -1359,7 +1359,7 @@ router.patch('/applications/:id', async (req, res) => {
     const updated = await prisma.application.update({
       where: { id: application.id },
       data,
-      include: { documents: true, user: { select: { email: true } } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, user: { select: { email: true } } },
     });
 
     await audit.record(req, {
@@ -1397,7 +1397,7 @@ router.delete('/applications/:id', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      include: { documents: true, user: { select: { email: true } } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, user: { select: { email: true } } },
     });
 
     if (!application) return res.status(404).json({ success: false, message: 'We could not find that application.' });

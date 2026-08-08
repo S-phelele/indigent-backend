@@ -12,6 +12,7 @@ const slots = require('../lib/documentSlots');
 const access = require('../lib/applicationAccess');
 const submission = require('../lib/submission');
 const functioning = require('../lib/functioning');
+const postal = require('../lib/postalAddress');
 const cache = require('../lib/cache');
 
 const router = express.Router();
@@ -55,7 +56,7 @@ router.post('/', requireApplicant, async (req, res) => {
         userId: req.user.id,
         status: 'DRAFT',
       },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     if (existingDraft) {
@@ -76,14 +77,14 @@ router.post('/', requireApplicant, async (req, res) => {
         idNumber: req.user.idNumber || null,
         cellNumber: req.user.cellNumber || null,
       },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     await prisma.document.createMany({ data: slots.seedRows(application.id) });
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     res.status(201).json({ success: true, data: full });
@@ -101,7 +102,7 @@ router.get('/mine', requireApplicant, async (req, res) => {
   try {
     const applications = await prisma.application.findMany({
       where: { userId: req.user.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -118,7 +119,7 @@ router.get('/:id', async (req, res) => {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
       include: {
-        documents: true,
+        documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] },
         user: {
           select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true, idNumber: true },
         },
@@ -150,7 +151,7 @@ router.get('/:id/timeline', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     if (!application) {
@@ -217,8 +218,8 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
 
     // String fields
     const stringKeys = [
-      'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
-      'residentialAddress', 'postalAddress', 'employerName', 'employerAddress',
+      'title', 'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
+      'residentialAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
       'wardNumber', 'municipalAccountNumber', 'eskomAccountNumber',
       'otherPropertyDetails', 'incomeExclusions',
@@ -229,6 +230,42 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
         if (v !== undefined) updateData[key] = v;
       }
     });
+
+    /**
+     * The postal address.
+     *
+     * Handled apart from the plain strings because the single-line
+     * `postalAddress` is composed by the server from the parts rather than
+     * accepted from the client — otherwise an address edited in parts but
+     * printed from a stale single field sends post to the wrong house.
+     */
+    const POSTAL_PARTS = ['postalLine1', 'postalLine2', 'postalSuburb', 'postalCity', 'postalCode'];
+    const postalTouched = POSTAL_PARTS.some((k) => body[k] !== undefined)
+      || body.postalSameAsResidential !== undefined
+      || body.postalAddress !== undefined;
+
+    if (postalTouched) {
+      const sameAs = toBool(body.postalSameAsResidential);
+      const merged = { ...application, ...updateData };
+
+      const parts = Object.fromEntries(
+        POSTAL_PARTS.map((k) => [k, body[k] !== undefined ? clean(body[k]) : merged[k]])
+      );
+
+      const wantsSame = sameAs !== undefined ? sameAs : Boolean(merged.postalSameAsResidential);
+
+      // Only complain about incomplete parts when they are actually being used.
+      if (!wantsSame) {
+        const found = postal.problems(parts);
+        if (found.length) return res.status(400).json({ success: false, message: found[0] });
+      }
+
+      Object.assign(updateData, postal.resolve({
+        sameAsResidential: wantsSame,
+        residentialAddress: merged.residentialAddress,
+        ...parts,
+      }));
+    }
 
     /**
      * Enumerated answers.
@@ -263,6 +300,39 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
      */
     if (updateData.idNumber !== undefined) {
       Object.assign(updateData, functioning.fromIdNumber(updateData.idNumber));
+    }
+
+    /**
+     * Employer details, when there is no employer.
+     *
+     * Somebody who filled in an employer and then answered "unemployed" would
+     * otherwise leave the old employer on file — invisible on a form that no
+     * longer shows those fields, and still there for the verification officer to
+     * see and query. Enforced here rather than in the browser so a councillor
+     * capturing at a door is held to the same rule.
+     */
+    const HAS_EMPLOYER = ['EMPLOYED', 'SELF_EMPLOYED'];
+    if (updateData.employmentStatus !== undefined && !HAS_EMPLOYER.includes(updateData.employmentStatus)) {
+      Object.assign(updateData, { employerName: null, employerAddress: null, workTelNumber: null });
+    }
+
+    /**
+     * Sex, when the applicant corrects it.
+     *
+     * The ID number's sequence digits encode sex as recorded at birth, which is
+     * the right default and wrong for some people. Applied after the derivation
+     * above so an explicit answer wins, and only for sex — the date of birth and
+     * age stay derived, because those are checked against the green book and a
+     * second answer would only create a contradiction.
+     */
+    if (body.sex !== undefined) {
+      const value = clean(body.sex);
+      if (value !== undefined) {
+        if (!['FEMALE', 'MALE'].includes(value)) {
+          return res.status(400).json({ success: false, message: 'Sex must be female or male.' });
+        }
+        updateData.sex = value;
+      }
     }
 
     /**
@@ -430,7 +500,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       // Nothing to update — still return current record so UI can advance
       const current = await prisma.application.findUnique({
         where: { id: req.params.id },
-        include: { documents: true },
+        include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
       });
       return res.json({ success: true, data: current });
     }
@@ -438,7 +508,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
     const updated = await prisma.application.update({
       where: { id: req.params.id },
       data: updateData,
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     /**
@@ -469,7 +539,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
 
         const refreshed = await prisma.application.findUnique({
           where: { id: updated.id },
-          include: { documents: true },
+          include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
         });
         return res.json({ success: true, data: refreshed, checklistChanged: true });
       }
@@ -492,7 +562,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
  * lib/submission.js, shared with the councillor's field capture so both routes
  * produce an identical record.
  */
-router.post('/:id/submit', access.loadFor('submit', { include: { documents: true } }), async (req, res) => {
+router.post('/:id/submit', access.loadFor('submit', { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } } }), async (req, res) => {
   try {
     const application = req.application;
 

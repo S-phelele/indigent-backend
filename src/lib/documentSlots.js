@@ -155,6 +155,28 @@ const BY_CATEGORY = {
 };
 
 /**
+ * Requirement groups, described for the interface.
+ *
+ * `label` names the obligation rather than any one document, because telling
+ * someone "Proof of Income is missing" when a grant letter would do is how you
+ * get an unnecessary phone call.
+ *
+ * Declared above `slotsFor` because the ordering below reads it, and `SLOTS` is
+ * built at module load — a `const` declared later would still be in its temporal
+ * dead zone at that point and throw on require.
+ */
+const GROUP_RULES = {
+  [GROUPS.FINANCIAL_EVIDENCE]: {
+    key: GROUPS.FINANCIAL_EVIDENCE,
+    label: 'Proof of income, proof of grant, or bank statements',
+    description:
+      'Supply whichever one you can. A payslip or employer\'s letter, a SASSA grant letter, or three months of bank '
+      + 'statements — any single one of these is enough. If you have none of them, your sworn affidavit covers it.',
+    minimum: 1,
+  },
+};
+
+/**
  * The full slot list for a given application.
  *
  * `application` may be a bare object with none of these fields set — a draft
@@ -176,29 +198,94 @@ function slotsFor(application = {}) {
   (BY_TENURE[application.tenure] || []).forEach(add);
   CORE.forEach(add);
 
-  return out;
+  return sortByObligation(out);
+}
+
+/**
+ * What must be supplied first, first.
+ *
+ * The list is what an applicant works down, and it was previously in the order
+ * the definitions happened to be written — so a genuinely optional death
+ * certificate could sit above a required affidavit. Somebody working from the
+ * top down would collect the wrong things first, and the ones that actually
+ * block submission last.
+ *
+ * Three bands, and within each the original order is kept so a category or
+ * tenure slot still leads:
+ *
+ *   0  Required on its own. Nothing can be submitted without it.
+ *   1  Part of a group where one member must be supplied. Also blocking, but any
+ *      one of them satisfies it, so they sit together directly beneath.
+ *   2  Genuinely optional. Helpful when they apply, never blocking.
+ *
+ * A stable sort, so this reorders bands without disturbing anything inside one.
+ */
+function sortByObligation(slots) {
+  const band = (slot) => {
+    if (slot.importance === REQUIRED) return 0;
+    if (slot.group && GROUP_RULES[slot.group]?.minimum > 0) return 1;
+    return 2;
+  };
+
+  return slots
+    .map((slot, index) => ({ slot, index, band: band(slot) }))
+    .sort((a, b) => a.band - b.band || a.index - b.index)
+    .map((entry) => entry.slot);
 }
 
 /** The list a brand-new application starts with, before anything is answered. */
 const SLOTS = slotsFor({});
 
 /**
- * Requirement groups, described for the interface.
+ * Put stored document rows into the same order as the checklist.
  *
- * `label` names the obligation rather than any one document, because telling
- * someone "Proof of Income is missing" when a grant letter would do is how you
- * get an unnecessary phone call.
+ * `findMany` returns rows in whatever order Postgres finds them, which is not
+ * the order they were created in and certainly not the order somebody should
+ * work down. Sorting here rather than with an `orderBy` keeps one definition of
+ * what "first" means: the enum would sort REQUIRED before OPTIONAL correctly,
+ * but the financial-evidence slots are OPTIONAL individually while the group is
+ * collectively required, and no column expresses that.
+ *
+ * Falls back to the checklist position for anything with the same obligation, so
+ * a proof of ownership still leads the required band. Documents an applicant
+ * added themselves have no slot, so they sort last, newest first.
  */
-const GROUP_RULES = {
-  [GROUPS.FINANCIAL_EVIDENCE]: {
-    key: GROUPS.FINANCIAL_EVIDENCE,
-    label: 'Proof of income, proof of grant, or bank statements',
-    description:
-      'Supply whichever one you can. A payslip or employer\'s letter, a SASSA grant letter, or three months of bank '
-      + 'statements — any single one of these is enough. If you have none of them, your sworn affidavit covers it.',
-    minimum: 1,
-  },
-};
+function orderRows(documents = []) {
+  const position = new Map(SLOTS_ORDER.map((type, index) => [type, index]));
+
+  const band = (doc) => {
+    if (doc.importance === REQUIRED) return 0;
+    if (doc.requirementGroup && GROUP_RULES[doc.requirementGroup]?.minimum > 0) return 1;
+    return 2;
+  };
+
+  return [...documents].sort((a, b) => {
+    const byBand = band(a) - band(b);
+    if (byBand) return byBand;
+
+    const pa = position.has(a.type) ? position.get(a.type) : Number.MAX_SAFE_INTEGER;
+    const pb = position.has(b.type) ? position.get(b.type) : Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+
+    // Extra documents the applicant attached: most recent first.
+    return new Date(b.uploadedAt || b.createdAt || 0) - new Date(a.uploadedAt || a.createdAt || 0);
+  });
+}
+
+/**
+ * Every slot type, in checklist order, across every category and tenure.
+ *
+ * Used only as a tie-break above. Built once at load rather than per call.
+ */
+const SLOTS_ORDER = (() => {
+  const every = [
+    ...Object.values(BY_CATEGORY).flat(),
+    ...Object.values(BY_TENURE).flat(),
+    ...CORE,
+  ];
+  return sortByObligation(every.filter((slot, i, all) => all.findIndex((s) => s.type === slot.type) === i))
+    .map((slot) => slot.type);
+})();
 
 /** Rows to create for a new application. */
 function seedRows(applicationId, application = {}) {
@@ -329,6 +416,8 @@ module.exports = {
   GROUPS,
   GROUP_RULES,
   slotsFor,
+  orderRows,
+  sortByObligation,
   seedRows,
   reconcile,
   outstanding,

@@ -268,7 +268,7 @@ router.post('/households', async (req, res) => {
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     res.status(201).json({
@@ -348,7 +348,7 @@ router.post('/residents/:id/applications', async (req, res) => {
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     res.status(201).json({ success: true, message: 'Application started', data: full });
@@ -374,7 +374,7 @@ router.post('/applications/:id/submit', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      include: { documents: true },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
     });
 
     if (!application) {

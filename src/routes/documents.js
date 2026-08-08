@@ -9,6 +9,7 @@ const { uploadLimiter } = require('../lib/rateLimit');
 const fileType = require('../lib/fileType');
 const notify = require('../lib/notify');
 const access = require('../lib/applicationAccess');
+const slots = require('../lib/documentSlots');
 const cache = require('../lib/cache');
 
 const router = express.Router();
@@ -304,7 +305,10 @@ router.get('/:applicationId', async (req, res) => {
       orderBy: { createdAt: 'asc' },
     });
 
-    res.json({ success: true, data: documents });
+    // What blocks submission goes first. Creation order put a genuinely optional
+    // death certificate above a required affidavit, so somebody working down the
+    // list collected the wrong things first.
+    res.json({ success: true, data: slots.orderRows(documents) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, message: 'We could not load the documents. Please try again.' });

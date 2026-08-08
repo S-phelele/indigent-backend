@@ -389,6 +389,14 @@ router.post('/applications/:id/return', respond.handler(async (req, res) => {
     details: `Returned from ${application.approvalStage} to ${toStage}: ${reason}`,
   });
 
+  // Sending a case backwards is the action most worth an administrator's
+  // attention: it means something went wrong earlier in the chain.
+  await tellAdmins(application, {
+    actor: req.user,
+    title: `Returned to ${chain.config(toStage)?.label.toLowerCase()}: ${application.reference || application.id.slice(0, 8)}`,
+    body: `${actorName(req.user)} sent it back from ${chain.config(application.approvalStage)?.label.toLowerCase()} — ${reason}`,
+  });
+
   // Whoever works the stage it went back to needs to know it has arrived.
   const targetRoles = chain.config(toStage)?.roles.filter((r) => r !== 'ADMIN') || [];
   const officers = await prisma.user.findMany({
@@ -462,6 +470,15 @@ router.post('/applications/:id/assessment', requireRole('ASSESSMENT_OFFICER', 'A
     entityType: 'Application',
     entityId: application.id,
     details: `Means test: ${finding.result} — ${meansTest.explain(finding)}`,
+  });
+
+  // The means test is where public money is committed or refused, so the result
+  // goes to administrators whether or not the stage is completed afterwards.
+  await tellAdmins(application, {
+    actor: req.user,
+    title: `Means test recorded: ${application.reference || application.id.slice(0, 8)}`,
+    body: `${actorName(req.user)} assessed it as ${finding.result.toLowerCase().replace(/_/g, ' ')}. `
+      + `${meansTest.explain(finding)}`,
   });
 
   res.json({
@@ -544,8 +561,52 @@ router.get('/applications/:id/history', respond.handler(async (req, res) => {
 // ---------------------------------------------------------------------------
 
 /** Tell whoever needs to know that a stage finished. */
+/**
+ * Tell every administrator what just happened to an application.
+ *
+ * Administrators are accountable for the register as a whole but do not sit in
+ * any one stage's queue, so without this the only way to learn that a supervisor
+ * signed something off was to go looking. Every action in the chain — a
+ * recommendation, an assessment, a sign-off, a refusal, a return — reaches them.
+ *
+ * `exceptUserId` skips the person who did it. An administrator acting in a stage
+ * does not need telling about their own decision, and a notification that arrives
+ * for your own click trains people to ignore the inbox.
+ */
+async function tellAdmins(application, { title, body, actor }) {
+  await notify.toAdmins({
+    type: notify.TYPE.APPROVAL_ACTIVITY,
+    title,
+    body,
+    link: `/applications/${application.id}`,
+    entityType: 'Application',
+    entityId: application.id,
+    exceptUserId: actor?.id,
+  });
+}
+
 async function announce(application, { stageConfig, outcome, notes, actor, step }) {
   const ref = application.reference || application.id.slice(0, 8);
+
+  /**
+   * The oversight copy, sent on every action regardless of stage.
+   *
+   * Deliberately before the branch below: the decision path returns early, so
+   * anything placed after it would only ever fire for the intermediate stages —
+   * which are precisely the ones an administrator cares least about.
+   */
+  const outcomeWords = {
+    APPROVED: 'approved it',
+    REJECTED: 'refused it',
+    RECOMMEND_APPROVE: 'recommended approval',
+    RECOMMEND_REJECT: 'recommended refusal',
+  };
+  await tellAdmins(application, {
+    actor,
+    title: `${stageConfig.label}: ${ref}`,
+    body: `${actorName(actor)} ${outcomeWords[outcome] || outcome.toLowerCase()}`
+      + `${notes ? ` — ${notes}` : ''}.`,
+  });
 
   // A decision reaches the applicant. A recommendation does not — telling
   // somebody they have been recommended for approval and then refusing them is

@@ -79,7 +79,7 @@ async function submit(application, { actor, capturedBy = null } = {}) {
       // A resubmission starts its service-level clock again.
       slaNotifiedLevel: null,
     },
-    include: { documents: true, user: { select: { id: true, cellNumber: true, firstName: true } } },
+    include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, user: { select: { id: true, cellNumber: true, firstName: true } } },
   });
 
   const ref = updated.reference || updated.id.slice(0, 8);

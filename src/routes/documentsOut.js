@@ -10,6 +10,8 @@ const signature = require('../lib/signature');
 const sanitize = require('../lib/sanitize');
 const respond = require('../lib/respond');
 const access = require('../lib/applicationAccess');
+const statsReport = require('../lib/statsReport');
+const spreadsheet = require('../lib/spreadsheet');
 
 /**
  * What comes out of the register: the printable form and the spreadsheet.
@@ -182,5 +184,99 @@ router.get('/renewals.csv', exportLimiter, respond.handler(async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.send(csv);
 }, 'export renewals csv'));
+
+// ---------------------------------------------------------------------------
+// Statistics
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything the report needs, in one pass.
+ *
+ * The same rows the analytics screen reads, so the two can never disagree about
+ * a figure — which is the failure that makes an exported report worse than no
+ * report at all.
+ */
+async function gatherStats() {
+  const APPLICATION_FIELDS = {
+    id: true, status: true, createdAt: true, submittedAt: true, reviewedAt: true,
+    peopleOnProperty: true, childrenUnder18: true, pensionersOver60: true,
+    totalHouseholdIncome: true, employmentStatus: true, maritalStatus: true,
+    captureChannel: true, capturedById: true, capturedWard: true,
+    residentialAddress: true, addressFormatted: true, addressLatitude: true,
+    age: true, sex: true, hasDisability: true,
+    difficultySeeing: true, difficultyHearing: true, difficultyWalking: true,
+    difficultyRemembering: true, difficultySelfCare: true, difficultyCommunicating: true,
+  };
+
+  const [applications, documents, councillors, totalUsers, usersWithApplication] = await Promise.all([
+    prisma.application.findMany({ select: APPLICATION_FIELDS }),
+    prisma.document.findMany({
+      where: { application: { status: { in: ['DRAFT', 'PENDING'] } } },
+      select: { name: true, type: true, importance: true, requirementGroup: true, status: true },
+    }),
+    prisma.user.findMany({
+      where: { role: { in: ['COUNCILLOR', 'CAPTURE_OFFICER'] } },
+      select: { id: true, firstName: true, lastName: true, email: true, ward: true, isActive: true },
+    }),
+    prisma.user.count({ where: { role: 'APPLICANT' } }),
+    prisma.user.count({ where: { role: 'APPLICANT', applications: { some: {} } } }),
+  ]);
+
+  return { applications, documents, councillors, totalUsers, usersWithApplication };
+}
+
+const reportFor = async (req) => statsReport.build({
+  ...(await gatherStats()),
+  generatedBy: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,
+});
+
+/**
+ * The statistics as a real Excel workbook.
+ *
+ * One sheet per table, with counts as numbers and money as money, so a council
+ * report can be built by charting the sheet rather than by retyping it. Written
+ * as SpreadsheetML, which Excel opens natively — see lib/spreadsheet.js for why
+ * that beats both a flat CSV and adding a library.
+ */
+router.get('/statistics.xls', exportLimiter, respond.handler(async (req, res) => {
+  const report = await reportFor(req);
+
+  await audit.record(req, {
+    action: audit.ACTIONS.EXPORT_APPLICATIONS,
+    entityType: 'Application',
+    details: `Exported the statistics report to Excel (${report.sections.length} tables)`,
+  });
+
+  const book = spreadsheet.workbook(statsReport.toSheets(report), {
+    title: `${report.municipality || 'Indigent Register'} — statistics`,
+    author: report.generatedBy,
+  });
+
+  res.setHeader('Content-Type', spreadsheet.CONTENT_TYPE);
+  res.setHeader('Content-Disposition',
+    `attachment; filename="indigent-statistics-${new Date().toISOString().slice(0, 10)}.xls"`);
+  res.send(book);
+}, 'export statistics workbook'));
+
+/**
+ * The same report as data, for the printable page.
+ *
+ * The admin portal renders this and the browser's own "Save as PDF" produces the
+ * file. That is a deliberate choice over generating PDFs on the server: a
+ * headless browser is a hundred megabytes of dependency and a second process to
+ * keep alive, to produce something every device can already make from a page
+ * that is styled for print.
+ */
+router.get('/statistics', exportLimiter, respond.handler(async (req, res) => {
+  const report = await reportFor(req);
+
+  await audit.record(req, {
+    action: audit.ACTIONS.EXPORT_APPLICATIONS,
+    entityType: 'Application',
+    details: 'Opened the printable statistics report',
+  });
+
+  res.json({ success: true, data: report });
+}, 'statistics report'));
 
 module.exports = router;
