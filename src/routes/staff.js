@@ -9,6 +9,7 @@ const { passwordProblems, temporaryPassword } = require('../lib/credentials');
 const saId = require('../lib/saIdNumber');
 const sanitize = require('../lib/sanitize');
 const cache = require('../lib/cache');
+const loginSecurity = require('../lib/loginSecurity');
 
 /**
  * Administering municipal staff.
@@ -53,6 +54,11 @@ const STAFF_FIELDS = {
   ward: true,
   isActive: true,
   mustChangePassword: true,
+  // Sign-in security, so an administrator can see who is locked out and who has
+  // not signed in for months — both worth acting on.
+  lockedUntil: true,
+  failedLoginAttempts: true,
+  lastLoginAt: true,
   createdAt: true,
   updatedAt: true,
 };
@@ -77,7 +83,22 @@ async function issueCredentials(user, { purpose }) {
 
   await prisma.user.update({
     where: { id: user.id },
-    data: { password: await bcrypt.hash(plain, 12), mustChangePassword: true },
+    data: {
+      password: await bcrypt.hash(plain, 12),
+      mustChangePassword: true,
+      /**
+       * Ends the holder's existing sessions.
+       *
+       * An administrator resetting a staff password is usually responding to a
+       * lost device or a suspected compromise, so the old sessions are precisely
+       * what needs to stop working.
+       */
+      passwordChangedAt: new Date(),
+      // A reset is also the way an administrator releases a locked account.
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      lastFailedLoginAt: null,
+    },
   });
 
   const delivery = await sms.send(user.cellNumber, body, {
@@ -147,6 +168,10 @@ router.get('/', async (req, res) => {
         roleLabel: ROLE_LABELS[c.role] || c.role,
         capturedTotal: _count.captured,
         capturedSubmitted: submittedBy[c.id] || 0,
+        // Resolved here rather than in the browser, so an expired lock is never
+        // shown as still locked because a device clock is wrong.
+        locked: loginSecurity.lockState(c).locked,
+        lockedForMinutes: loginSecurity.lockState(c).minutesLeft || null,
       })),
     });
   } catch (error) {
@@ -341,6 +366,56 @@ router.patch('/:id', async (req, res) => {
   } catch (error) {
     console.error('update staff error:', error);
     res.status(500).json({ success: false, message: 'We could not save those changes. Please try again.' });
+  }
+});
+
+/**
+ * Release a locked account without changing its password.
+ *
+ * The person who has been locked out is usually standing in front of an
+ * administrator saying they mistyped it three times. Making them wait out the
+ * lock, or forcing a password reset and an SMS, is disproportionate to that — and
+ * a front-desk officer who cannot sign in is a queue of households who cannot be
+ * helped.
+ *
+ * Recorded, because releasing a lock is exactly what somebody who caused the
+ * lock would want done. The audit row says who did it and to whom.
+ */
+router.post('/:id/unlock', async (req, res) => {
+  try {
+    const staff = await prisma.user.findFirst({
+      where: { id: req.params.id, role: { in: MANAGEABLE_ROLES } },
+      select: { id: true, email: true, lockedUntil: true, failedLoginAttempts: true },
+    });
+    if (!staff) {
+      return res.status(404).json({ success: false, message: 'We could not find that staff member.' });
+    }
+
+    const state = loginSecurity.lockState(staff);
+    if (!state.locked) {
+      return res.json({ success: true, message: 'That account is not locked.', data: { locked: false } });
+    }
+
+    await prisma.user.update({
+      where: { id: staff.id },
+      data: { lockedUntil: null, failedLoginAttempts: 0, lastFailedLoginAt: null },
+    });
+
+    await audit.record(req, {
+      action: audit.ACTIONS.ACCOUNT_UNLOCKED,
+      entityType: 'User',
+      entityId: staff.id,
+      details: `Released the sign-in lock on ${staff.email} after ${staff.failedLoginAttempts} failed attempt(s)`,
+    });
+
+    res.json({
+      success: true,
+      message: `${staff.email} can sign in again.`,
+      data: { locked: false },
+    });
+  } catch (error) {
+    console.error('unlock staff error:', error);
+    res.status(500).json({ success: false, message: 'We could not unlock that account. Please try again.' });
   }
 });
 

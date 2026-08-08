@@ -25,6 +25,7 @@ const exportRoutes = require('./routes/documentsOut');
 const privacyRoutes = require('./routes/privacy');
 const renewal = require('./lib/renewal');
 const retention = require('./lib/retention');
+const loginSecurity = require('./lib/loginSecurity');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -40,6 +41,21 @@ if (!process.env.JWT_SECRET || PLACEHOLDER_SECRETS.includes(process.env.JWT_SECR
     process.exit(1);
   }
   console.warn(`WARNING: ${message} This must be changed before deploying.`);
+}
+
+/**
+ * JWT_EXPIRES_IN no longer does anything.
+ *
+ * Session length is set by SESSION_HOURS alone. Said out loud because a stale
+ * `JWT_EXPIRES_IN=7d` in an existing .env is exactly the kind of setting an
+ * operator would trust — and it was silently overriding the shorter default,
+ * leaving tokens valid for a week on a system holding ID numbers.
+ */
+if (process.env.JWT_EXPIRES_IN) {
+  console.warn(
+    `WARNING: JWT_EXPIRES_IN is set to "${process.env.JWT_EXPIRES_IN}" but is no longer used. `
+    + `Sessions last SESSION_HOURS (currently ${loginSecurity.SESSION_HOURS}h). Remove it from your .env.`
+  );
 }
 
 // Ensure upload directory exists

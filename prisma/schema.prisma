@@ -260,6 +260,30 @@ model User {
   /// residents they signed up, and those residents must not go with them.
   registeredById String?
 
+  // --- Sign-in security -----------------------------------------------------
+  //
+  // Rate limiting alone is keyed on the connection, so somebody working through
+  // a pool of addresses gets a fresh allowance with each one. These columns move
+  // the count onto the account, which is what is actually under attack.
+
+  /// Consecutive failures. Reset to zero by any successful sign-in.
+  failedLoginAttempts Int      @default(0)
+  /// Set when the threshold is passed. Sign-in is refused until this time.
+  lockedUntil         DateTime?
+  lastFailedLoginAt   DateTime?
+
+  /// Shown on the profile page so somebody can notice a sign-in that was not
+  /// theirs — the cheapest account-compromise detection there is.
+  lastLoginAt         DateTime?
+  lastLoginIp         String?
+
+  /// Every token issued before this moment is refused.
+  ///
+  /// Changing a password has to end the other sessions, or a stolen token keeps
+  /// working for its full lifetime after the theft has been noticed and acted on.
+  /// Compared against the token's issued-at claim on every request.
+  passwordChangedAt   DateTime?
+
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -713,6 +737,10 @@ enum NotificationType {
   RENEWAL_DUE
   RENEWAL_OVERDUE
   REGISTRATION_LAPSED
+
+  /// A staff account was locked by repeated failed sign-ins. Worth an
+  /// administrator's attention while it is happening, not at audit time.
+  ACCOUNT_LOCKED
 }
 
 /// In-app notifications.

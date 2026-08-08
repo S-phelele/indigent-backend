@@ -9,6 +9,7 @@ const notify = require('../lib/notify');
 const saId = require('../lib/saIdNumber');
 const sms = require('../lib/sms');
 const smsTemplates = require('../lib/smsTemplates');
+const loginSecurity = require('../lib/loginSecurity');
 const {
   loginLimiter,
   registerLimiter,
@@ -19,11 +20,23 @@ const {
 
 const router = express.Router();
 
-const generateToken = (userId) => {
-  return jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  });
-};
+/**
+ * Mint a session token.
+ *
+ * The lifetime is a cap on how long a copied token stays useful. Seven days was
+ * too generous for a system holding ID numbers, income declarations and the
+ * coordinates of people's homes — a token lifted from a shared municipal machine
+ * should not still work next week. Eight hours covers a shift.
+ *
+ * SESSION_HOURS is the only setting that controls this. `JWT_EXPIRES_IN` used to,
+ * and is deliberately ignored now: two variables governing the same thing is how
+ * a change like this silently does nothing, which is exactly what happened here —
+ * the shorter default was overridden by a `JWT_EXPIRES_IN=7d` left in an existing
+ * `.env`, and tokens carried on lasting a week. `index.js` warns at boot if it is
+ * still set, so nobody is left believing a value that has no effect.
+ */
+const generateToken = (userId) =>
+  jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: `${loginSecurity.SESSION_HOURS}h` });
 
 const { passwordProblems } = require('../lib/credentials');
 
@@ -150,7 +163,97 @@ router.post('/login', loginLimiter, async (req, res) => {
         : { email: identifier },
     });
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    /**
+     * A locked account is refused before the password is even compared.
+     *
+     * Checking the password first would let somebody keep testing guesses against
+     * a locked account and learn from the timing which one was right, which is
+     * most of what the lock exists to prevent.
+     */
+    const lock = loginSecurity.lockState(user);
+    if (lock.locked) {
+      await audit.record(req, {
+        action: audit.ACTIONS.LOGIN_BLOCKED,
+        entityType: 'User',
+        entityId: user.id,
+        details: `Sign-in refused: account locked for another ${lock.minutesLeft} minute(s)`,
+        actor: user,
+      });
+      return res.status(429).json({
+        success: false,
+        code: 'ACCOUNT_LOCKED',
+        message: loginSecurity.lockedMessage(lock.minutesLeft),
+        lockedForMinutes: lock.minutesLeft,
+      });
+    }
+
+    const passwordMatches = user ? await bcrypt.compare(password, user.password) : false;
+
+    if (!user || !passwordMatches) {
+      /**
+       * Count the failure against the account, not just the connection.
+       *
+       * The rate limiter is keyed on the caller's address, so an attacker with a
+       * pool of addresses gets a fresh allowance with each one. This is the count
+       * that follows the account being attacked.
+       *
+       * Nothing is recorded when no such account exists — writing a row would
+       * turn response timing into a way to enumerate which addresses are real.
+       */
+      if (user) {
+        const failure = loginSecurity.registerFailure(user);
+        await prisma.user.update({ where: { id: user.id }, data: failure.data });
+
+        await audit.record(req, {
+          action: failure.locked ? audit.ACTIONS.ACCOUNT_LOCKED : audit.ACTIONS.LOGIN_FAILED,
+          entityType: 'User',
+          entityId: user.id,
+          details: failure.locked
+            ? `Locked for ${failure.minutes} minute(s) after ${failure.attempts} failed attempt(s)`
+            : `Failed sign-in attempt ${failure.attempts} of ${loginSecurity.THRESHOLD}`,
+          actor: user,
+        });
+
+        // Somebody grinding away at a supervisor's account is worth an
+        // administrator's attention while it is happening, not at audit time.
+        if (failure.locked && user.role !== 'APPLICANT') {
+          await notify.toAdmins({
+            type: notify.TYPE.ACCOUNT_LOCKED,
+            title: 'A staff account has been locked',
+            body: `${user.email} was locked for ${failure.minutes} minute(s) after ${failure.attempts} failed sign-in attempts.`,
+            link: '/staff',
+            entityType: 'User',
+            entityId: user.id,
+          });
+        }
+
+        if (failure.locked) {
+          return res.status(429).json({
+            success: false,
+            code: 'ACCOUNT_LOCKED',
+            message: loginSecurity.lockedMessage(failure.minutes),
+            lockedForMinutes: failure.minutes,
+          });
+        }
+
+        /**
+         * Warn only once the account is close to locking.
+         *
+         * Announcing "4 attempts remaining" from the first typo is noise, and it
+         * hands an attacker a countdown to the threshold. Saying so on the last
+         * attempt or two helps the person who is simply misremembering their own
+         * password and is about to be locked out.
+         */
+        if (failure.remaining <= 2) {
+          return res.status(401).json({
+            success: false,
+            message: `That email address or password is not correct. `
+              + `${failure.remaining} more failed ${failure.remaining === 1 ? 'attempt' : 'attempts'} will lock this account.`,
+            attemptsRemaining: failure.remaining,
+          });
+        }
+      }
+
       return res.status(401).json({ success: false, message: 'That email address or password is not correct.' });
     }
 
@@ -165,6 +268,20 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const token = generateToken(user.id);
+
+    /**
+     * The previous sign-in, read before this one overwrites it.
+     *
+     * Returned to the portal so it can show "last signed in on…". Somebody
+     * noticing a sign-in that was not theirs is the cheapest account-compromise
+     * detection available, and it costs one line.
+     */
+    const previousSignIn = user.lastLoginAt;
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: loginSecurity.registerSuccess(req),
+    });
 
     await audit.record(req, {
       action: audit.ACTIONS.LOGIN,
@@ -193,6 +310,10 @@ router.post('/login', loginLimiter, async (req, res) => {
           mustChangePassword: user.mustChangePassword,
         },
         token,
+        /** So the portal can show it and somebody can spot a sign-in that was not theirs. */
+        previousSignIn: previousSignIn || null,
+        /** The idle timeout the portals enforce, so the policy lives in one place. */
+        session: loginSecurity.policy(),
       },
     });
   } catch (error) {
@@ -353,7 +474,21 @@ router.post('/reset-password', passwordResetLimiter, async (req, res) => {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { password: await bcrypt.hash(newPassword, 12) },
+      data: {
+        password: await bcrypt.hash(newPassword, 12),
+        /**
+         * Ends every session opened with the old password.
+         *
+         * This is the case that matters most: somebody resetting their password
+         * because they think it has been taken. Leaving the old sessions alive
+         * would make the reset theatre.
+         */
+        passwordChangedAt: new Date(),
+        // A successful reset also clears a lock — the person has proved control of
+        // the cell number, which is stronger evidence than a password.
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      },
     });
 
     await audit.record(req, {
@@ -466,6 +601,10 @@ router.post('/change-password', authenticate, async (req, res) => {
         // Clears the lock set when staff issued this account's first password.
         // From here the holder is the only person who knows it.
         mustChangePassword: false,
+        // Ends any other session opened with the old password. The token in the
+        // caller's own hand was minted before this moment too, so a fresh one is
+        // issued below rather than signing them out of the change they just made.
+        passwordChangedAt: new Date(),
       },
     });
 
@@ -478,7 +617,19 @@ router.post('/change-password', authenticate, async (req, res) => {
         : 'Password changed from the profile page',
     });
 
-    res.json({ success: true, message: 'Password changed' });
+    /**
+     * A replacement token, because the caller's current one is now stale.
+     *
+     * Revoking on password change is only useful if it is unconditional, and that
+     * includes the session doing the changing. Handing back a new token keeps the
+     * person signed in without weakening the rule — the portals swap it in, and
+     * every *other* device is signed out.
+     */
+    res.json({
+      success: true,
+      message: 'Password changed. Any other devices signed in as you have been signed out.',
+      data: { token: generateToken(req.user.id) },
+    });
   } catch (error) {
     console.error('change password error:', error);
     res.status(500).json({ success: false, message: 'We could not change your password. Please try again.' });

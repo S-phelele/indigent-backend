@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const prisma = require('../lib/prisma');
+const loginSecurity = require('../lib/loginSecurity');
 
 const authenticate = async (req, res, next) => {
   try {
@@ -25,11 +26,44 @@ const authenticate = async (req, res, next) => {
         ward: true,
         isActive: true,
         mustChangePassword: true,
+        passwordChangedAt: true,
+        lockedUntil: true,
       },
     });
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Your session is no longer valid. Please sign in again.' });
+    }
+
+    /**
+     * A token minted before the password changed is dead.
+     *
+     * This is what makes changing a password an act of defence rather than a
+     * formality. Without it, somebody who has stolen a token keeps using it for
+     * the token's full lifetime, and the victim changing their password does
+     * nothing at all to stop them. Checked here so it applies to every route.
+     */
+    if (loginSecurity.issuedBeforePasswordChange(decoded, user)) {
+      return res.status(401).json({
+        success: false,
+        code: 'SESSION_REVOKED',
+        message: 'Your password was changed, so this session has ended. Please sign in again.',
+      });
+    }
+
+    /**
+     * A lock takes effect immediately, on sessions that are already open.
+     *
+     * An administrator locking a compromised account expects it to stop working
+     * now, not whenever the holder's token happens to expire.
+     */
+    const lock = loginSecurity.lockState(user);
+    if (lock.locked) {
+      return res.status(423).json({
+        success: false,
+        code: 'ACCOUNT_LOCKED',
+        message: loginSecurity.lockedMessage(lock.minutesLeft),
+      });
     }
 
     // A councillor who has left office keeps their history but loses access.
@@ -46,7 +80,31 @@ const authenticate = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    return res.status(401).json({ success: false, message: 'Your session has ended. Please sign in again.' });
+    /**
+     * An expired session and a malformed token are different events.
+     *
+     * Both end in signing out, but only one deserves an explanation. "Your
+     * session timed out" tells somebody who left a tab open for a day what
+     * happened and that nothing is wrong; the same words for a corrupted token
+     * would be a guess. The portals use the code to decide what to say on the
+     * sign-in screen.
+     */
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        code: 'SESSION_EXPIRED',
+        message: 'Your session has timed out. Please sign in again.',
+      });
+    }
+
+    // A bad signature is worth a line in the log: it is either a bug in a client
+    // or somebody editing tokens by hand.
+    console.warn(`[auth] rejected token: ${error.name} — ${error.message}`);
+    return res.status(401).json({
+      success: false,
+      code: 'SESSION_INVALID',
+      message: 'Your session is no longer valid. Please sign in again.',
+    });
   }
 };
 
