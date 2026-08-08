@@ -18,6 +18,15 @@ const { staffLimiter } = require('../lib/rateLimit');
  * person decides. That separation is the point of having roles at all.
  */
 const router = express.Router();
+
+/**
+ * The enum values the database will accept, mirrored here so an unrecognised one
+ * is answered with a sentence naming the alternatives rather than a 500.
+ *
+ * Kept in step with SiteVisitOutcome and CheckOutcome in schema.prisma.
+ */
+const VISIT_OUTCOMES = ['SCHEDULED', 'VERIFIED', 'NO_ACCESS', 'OCCUPANT_ABSENT', 'ADDRESS_NOT_FOUND', 'DETAILS_DISPUTED'];
+const CHECK_OUTCOMES = ['PASS', 'FAIL', 'INCONCLUSIVE', 'NOT_APPLICABLE'];
 router.use(...protect, requireRole('VERIFICATION_OFFICER', 'ADMIN'), staffLimiter);
 router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 
@@ -202,6 +211,21 @@ router.post('/applications/:id/visits', async (req, res) => {
 
     const { scheduledFor, visitedAt, outcome = 'SCHEDULED', findings, latitude, longitude } = req.body || {};
 
+    /**
+     * Check the outcome before Prisma does.
+     *
+     * An unrecognised value otherwise reaches the database, which rejects it, and
+     * the catch below turns that into "we could not save that visit — please try
+     * again". Trying again cannot help: the value will be wrong every time. This
+     * says what was actually wrong and what is accepted instead.
+     */
+    if (!VISIT_OUTCOMES.includes(outcome)) {
+      return res.status(400).json({
+        success: false,
+        message: `"${outcome}" is not a visit outcome. Choose one of: ${VISIT_OUTCOMES.join(', ')}.`,
+      });
+    }
+
     if (latitude !== undefined && longitude !== undefined && latitude !== null && longitude !== null) {
       if (!geocode.withinSouthAfrica(latitude, longitude)) {
         return res.status(400).json({ success: false, message: 'Those coordinates are outside South Africa.' });
@@ -354,6 +378,15 @@ router.post('/applications/:id/checks', async (req, res) => {
     const SOURCES = ['SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
     if (!SOURCES.includes(source)) {
       return res.status(400).json({ success: false, message: `Source must be one of: ${SOURCES.join(', ')}` });
+    }
+    // The source was already checked here; the outcome was not, so an
+    // unrecognised one fell through to Prisma and came back as a 500 telling the
+    // officer to try again — advice that could never work.
+    if (!CHECK_OUTCOMES.includes(outcome)) {
+      return res.status(400).json({
+        success: false,
+        message: `"${outcome}" is not a check outcome. Choose one of: ${CHECK_OUTCOMES.join(', ')}.`,
+      });
     }
 
     const check = await prisma.verificationCheck.create({

@@ -245,3 +245,47 @@ test('a completed verification has nothing outstanding', () => {
   );
   assert.deepEqual(result.outstanding, []);
 });
+
+// ---------------------------------------------------------------------------
+// The enum lists mirrored in the route must match the schema
+// ---------------------------------------------------------------------------
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+/** Pull the members of one enum straight out of schema.prisma. */
+function schemaEnum(name) {
+  const schema = fs.readFileSync(path.join(__dirname, '..', 'prisma', 'schema.prisma'), 'utf8');
+  const block = new RegExp(`enum ${name} \{([^}]*)\}`).exec(schema);
+  if (!block) throw new Error(`enum ${name} is not in schema.prisma`);
+  return block[1]
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, '').trim())
+    .filter(Boolean);
+}
+
+/**
+ * A tripwire, not a style check.
+ *
+ * The verification routes keep their own copy of these values so an unrecognised
+ * outcome is answered with a sentence rather than reaching Prisma and coming back
+ * as "we could not save that — please try again", which is advice that can never
+ * work. A copy is only safe while something notices it drifting: add a value to
+ * the schema and forget the route, and officers get a 400 refusing a value the
+ * database would happily have accepted.
+ */
+test('the visit outcomes the route accepts match the schema', () => {
+  const route = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'verification.js'), 'utf8');
+  const listed = /const VISIT_OUTCOMES = \[([^\]]*)\]/.exec(route)[1]
+    .split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean);
+
+  assert.deepEqual(listed.sort(), schemaEnum('SiteVisitOutcome').sort());
+});
+
+test('the check outcomes the route accepts match the schema', () => {
+  const route = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'verification.js'), 'utf8');
+  const listed = /const CHECK_OUTCOMES = \[([^\]]*)\]/.exec(route)[1]
+    .split(',').map((s) => s.trim().replace(/'/g, '')).filter(Boolean);
+
+  assert.deepEqual(listed.sort(), schemaEnum('CheckOutcome').sort());
+});
