@@ -19,6 +19,10 @@ const staffRoutes = require('./routes/staff');
 const fieldworkRoutes = require('./routes/fieldwork');
 const verificationRoutes = require('./routes/verification');
 const householdRoutes = require('./routes/household');
+const approvalRoutes = require('./routes/approvals');
+const renewalRoutes = require('./routes/renewals');
+const exportRoutes = require('./routes/documentsOut');
+const renewal = require('./lib/renewal');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -103,6 +107,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/applications', householdRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/verification', verificationRoutes);
+app.use('/api/approvals', approvalRoutes);
+app.use('/api/renewals', renewalRoutes);
+app.use('/api/export', exportRoutes);
 // Mounted before the general admin router so its own paths win; admin.js has no
 // /staff route, so order is defensive rather than load-bearing.
 app.use('/api/admin/staff', staffRoutes);
@@ -193,6 +200,9 @@ const server = app.listen(PORT, () => {
 // can detect it. This is the only notification that needs a timer.
 const stopSlaMonitor = slaMonitor.schedule();
 
+// Registrations expire on a date nobody watches, so the sweep has to.
+const stopRenewalMonitor = renewal.schedule();
+
 // --- Graceful shutdown ------------------------------------------------------
 // Finish in-flight requests and close the connection pool, so deploys and
 // restarts do not sever open uploads or leak Postgres connections.
@@ -208,6 +218,7 @@ async function shutdown(signal) {
   }, 10000).unref();
 
   stopSlaMonitor();
+  stopRenewalMonitor();
 
   server.close(async () => {
     try {

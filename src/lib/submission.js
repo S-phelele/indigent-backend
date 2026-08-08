@@ -60,6 +60,16 @@ async function submit(application, { actor, capturedBy = null } = {}) {
       status: 'PENDING',
       submittedAt: new Date(),
       currentStep: 5,
+      /**
+       * Submitting puts the application at the front of the approval chain.
+       *
+       * Without this the record is PENDING but sits at NOT_SUBMITTED, so it
+       * appears in no queue at all — the worst possible failure, because
+       * nothing looks broken while every submitted application quietly becomes
+       * invisible to the officers meant to work it.
+       */
+      approvalStage: 'VERIFICATION',
+      verificationStage: 'NOT_STARTED',
       // Assigned at submission, not at draft creation — nobody quotes a
       // reference for a form they have not sent yet.
       reference: application.reference || (await reference.allocate()),

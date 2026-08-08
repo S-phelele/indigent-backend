@@ -33,12 +33,14 @@ router.use(...protect, requireAdmin);
 router.use(cache.invalidateOn(cache.TAGS.STAFF, cache.TAGS.USERS, cache.TAGS.ANALYTICS));
 
 /** Roles this screen may create. ADMIN is not among them, on purpose. */
-const MANAGEABLE_ROLES = ['COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER'];
+const MANAGEABLE_ROLES = ['COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
 
 const ROLE_LABELS = {
   COUNCILLOR: 'Ward Councillor',
   CAPTURE_OFFICER: 'Capture Officer',
   VERIFICATION_OFFICER: 'Verification Officer',
+  ASSESSMENT_OFFICER: 'Assessment Officer',
+  SUPERVISOR: 'Supervisor',
 };
 
 const STAFF_FIELDS = {

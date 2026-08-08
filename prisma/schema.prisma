@@ -28,8 +28,68 @@ enum Role {
   /// does not decide.
   VERIFICATION_OFFICER
 
+  /// Applies the means test: measures declared and verified household income
+  /// against the municipal threshold, and confirms the relief can be carried by
+  /// the indigent budget. Recommends — does not decide.
+  ASSESSMENT_OFFICER
+
+  /// Signs the application off. The last pair of eyes and the only role, other
+  /// than an administrator, that turns a recommendation into a decision. The
+  /// sign-off carries a drawn signature.
+  SUPERVISOR
+
   /// Full authority, including the final approve or decline.
   ADMIN
+}
+
+/// Where an application sits in the approval chain.
+///
+/// Submitting does not put an application in front of a decision-maker; it puts
+/// it at the start of a queue that three different people work in turn. Each
+/// stage answers a different question and none of them can answer the next
+/// one's — which is the whole point of splitting them.
+enum ApprovalStage {
+  /// Not yet submitted.
+  NOT_SUBMITTED
+  /// Is what they told us true? Site visits and external checks.
+  VERIFICATION
+  /// Do they qualify, and can we afford it? The means test.
+  ASSESSMENT
+  /// Final sign-off, with a signature.
+  SUPERVISOR_SIGNOFF
+  /// Decided.
+  COMPLETE
+}
+
+/// What one person did at one stage.
+enum StepOutcome {
+  PENDING
+  RECOMMEND_APPROVE
+  RECOMMEND_REJECT
+  APPROVED
+  REJECTED
+  /// Sent back to an earlier stage because something was wrong or missing.
+  RETURNED
+}
+
+/// The outcome of measuring household income against the municipal threshold.
+enum MeansTestResult {
+  QUALIFIES
+  /// Over the threshold, but a reviewer may still approve with reasons — a very
+  /// large household can exceed the household figure while falling well under it
+  /// per person.
+  ABOVE_THRESHOLD
+  /// Not enough information to decide.
+  INSUFFICIENT_DATA
+}
+
+/// Where an approved registration is in its yearly cycle.
+enum RenewalStatus {
+  NOT_APPLICABLE
+  ACTIVE
+  DUE_SOON
+  OVERDUE
+  LAPSED
 }
 
 /// How the household holds the property. A tenant is billed for services but
@@ -357,6 +417,48 @@ model Application {
   recommendedAt         DateTime?
   recommendationNotes   String?
 
+  // --- The approval chain ---------------------------------------------------
+  //
+  // Three stages, three different people, three different questions. The stage
+  // is the authoritative position; ApprovalStep rows are the history of how it
+  // got there and are never rewritten.
+
+  approvalStage         ApprovalStage     @default(NOT_SUBMITTED)
+
+  /// Means test, recorded by the assessment officer.
+  meansTestResult       MeansTestResult?
+  /// Income the assessment officer settled on, which may differ from the
+  /// declaration once external checks are taken into account.
+  assessedIncome        Decimal?          @db.Decimal(12, 2)
+  assessedPerPerson     Decimal?          @db.Decimal(12, 2)
+  assessmentNotes       String?
+  assessedById          String?
+  assessedAt            DateTime?
+  /// Whether the indigent budget can carry this relief, as judged at assessment.
+  budgetConfirmed       Boolean?
+  budgetNotes           String?
+
+  /// Final sign-off.
+  signedOffById         String?
+  signedOffAt           DateTime?
+  signOffNotes          String?
+
+  // --- Annual re-verification -----------------------------------------------
+  //
+  // Indigent status is granted for a period, not for life. Most municipal
+  // policies require yearly re-verification, and a register that never expires
+  // quietly drifts away from who actually qualifies.
+
+  approvedAt            DateTime?
+  /// When this registration stops being valid without re-verification.
+  expiresAt             DateTime?
+  renewalStatus         RenewalStatus     @default(NOT_APPLICABLE)
+  /// Highest renewal reminder already sent, so a household is not texted daily.
+  renewalNotifiedLevel  String?
+  /// How many times this household has been re-verified and renewed.
+  renewalCount          Int               @default(0)
+  lastRenewedAt         DateTime?
+
   /// Set when an officer captured this for somebody who could not complete it
   /// themselves — an applicant who cannot read, or cannot write. The witness is
   /// the protection: somebody other than the officer confirms that what was
@@ -404,6 +506,8 @@ model Application {
   household             HouseholdMember[]
   siteVisits            SiteVisit[]
   checks                VerificationCheck[]
+  approvalSteps         ApprovalStep[]
+  changes               FieldChange[]
 
   @@index([status])
   @@index([userId])
@@ -411,6 +515,9 @@ model Application {
   @@index([capturedById])
   @@index([captureChannel])
   @@index([verificationStage])
+  @@index([approvalStage])
+  @@index([expiresAt])
+  @@index([renewalStatus])
   @@index([wardNumber])
   /// The review queue's default ordering. Without this the list page sorts the
   /// whole table on every request.
@@ -538,6 +645,12 @@ enum NotificationType {
   APPLICATION_BREACHED
   COUNCILLOR_CAPTURE
   RECOMMENDATION_READY
+  AWAITING_ASSESSMENT
+  AWAITING_SIGNOFF
+  RETURNED_FOR_REWORK
+  RENEWAL_DUE
+  RENEWAL_OVERDUE
+  REGISTRATION_LAPSED
 }
 
 /// In-app notifications.
@@ -583,6 +696,90 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@index([userEmail])
+}
+
+/// One person's action at one stage of the approval chain.
+///
+/// Append-only. A step is never edited or deleted, because the whole value of
+/// this table is that it is the answer to "who decided this, on what, and when"
+/// — which is exactly what an Auditor-General review asks for, and exactly what
+/// a municipality cannot produce when the answer lives in somebody's email.
+///
+/// Returning an application to an earlier stage creates a new step rather than
+/// undoing the old one, so a case that went round twice reads as having gone
+/// round twice.
+model ApprovalStep {
+  id            String        @id @default(uuid())
+  applicationId String
+
+  stage         ApprovalStage
+  outcome       StepOutcome   @default(PENDING)
+  /// Sequence within this application, so a case that looped is readable in
+  /// order even when two steps share a stage.
+  sequence      Int
+
+  actorId       String?
+  /// Denormalised so the trail survives the account being deleted.
+  actorName     String?
+  actorRole     String?
+
+  notes         String?
+  /// Set when the outcome is RETURNED: which stage it went back to, and why.
+  returnedTo    ApprovalStage?
+  returnReason  String?
+
+  /// Drawn signature, held as a data URI. Only the supervisor's sign-off step
+  /// carries one; see src/lib/signature.js for what is accepted and why.
+  signature     String?
+  signatureName String?
+  signedAt      DateTime?
+  /// Recorded with the signature, because an electronic signature is only worth
+  /// as much as the evidence about the circumstances in which it was made.
+  signatureIp   String?
+
+  startedAt     DateTime      @default(now())
+  decidedAt     DateTime?
+
+  application   Application   @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, sequence])
+  @@index([stage, outcome])
+  @@index([actorId])
+}
+
+/// Every field on an application that anybody changed, with its old and new
+/// value.
+///
+/// The audit log records that an application was updated; this records what
+/// was actually different. Those are not the same question, and only the second
+/// one answers "was this household's income edited after it was assessed?"
+///
+/// Deliberately not related to User with a foreign key: the trail must survive
+/// deletion of the account that caused it.
+model FieldChange {
+  id            String   @id @default(uuid())
+  applicationId String
+
+  field         String
+  /// Stored as text whatever the column's real type. These are read by a human
+  /// reviewing a case, not queried numerically.
+  oldValue      String?
+  newValue      String?
+
+  actorId       String?
+  actorName     String?
+  actorRole     String?
+  /// The stage the application was at when this changed. An income edited
+  /// during capture is ordinary; the same edit after assessment is not.
+  atStage       ApprovalStage?
+  ipAddress     String?
+  createdAt     DateTime @default(now())
+
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+  @@index([field])
+  @@index([actorId])
 }
 
 enum SmsStatus {

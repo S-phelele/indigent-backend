@@ -69,7 +69,7 @@ const requireAdmin = requireRole('ADMIN');
 const requireApplicant = requireRole('APPLICANT');
 
 /** Anyone who works for the municipality rather than applying to it. */
-const STAFF_ROLES = ['ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER'];
+const STAFF_ROLES = ['ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
 const requireStaff = requireRole(...STAFF_ROLES);
 
 /** Roles that may capture an application on somebody's behalf. */
@@ -77,6 +77,10 @@ const requireCapture = requireRole('ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER');
 
 /** Roles that may verify. Deliberately excludes anyone who captures. */
 const requireVerifier = requireRole('ADMIN', 'VERIFICATION_OFFICER');
+
+/** Roles that work a stage of the approval chain. */
+const APPROVER_ROLES = ['ADMIN', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
+const requireApprover = requireRole(...APPROVER_ROLES);
 
 /**
  * Block everything until a handed-out password has been replaced.
@@ -130,6 +134,8 @@ module.exports = {
   requireStaff,
   requireCapture,
   requireVerifier,
+  requireApprover,
   requirePasswordChanged,
   STAFF_ROLES,
+  APPROVER_ROLES,
 };

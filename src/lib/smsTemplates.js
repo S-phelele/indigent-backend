@@ -79,6 +79,29 @@ const templates = {
       : `We have attempted to visit your property for ${reference} three times without success. `
         + `Please contact your municipal office urgently.${helpSuffix()}`,
 
+  /**
+   * Renewal reminders.
+   *
+   * Sent while there is still something the household can do. A message that
+   * only arrives once support has already stopped is a notification, not a
+   * warning.
+   */
+  RENEWAL_DUE: ({ reference, days }) =>
+    `Your indigent registration ${reference} expires in ${days} days. `
+    + `Please visit your municipal office to be re-verified so your support continues.${helpSuffix()}`,
+
+  RENEWAL_OVERDUE: ({ reference, days }) =>
+    `Your indigent registration ${reference} expired ${days} days ago. `
+    + `Please visit your municipal office urgently to be re-verified.${helpSuffix()}`,
+
+  REGISTRATION_LAPSED: ({ reference }) =>
+    `Your indigent registration ${reference} has lapsed because it was not re-verified. `
+    + `You will need to apply again to receive support.${helpSuffix()}`,
+
+  RENEWED: ({ reference, months }) =>
+    `Your indigent registration ${reference} has been renewed for a further ${months} months. `
+    + `No further action is needed.${helpSuffix()}`,
+
   INFORMATION_REQUESTED: ({ reference }) =>
     `More information is needed for your indigent application ${reference}. `
     + `Please sign in at ${PORTAL_URL} to see what is required.${helpSuffix()}`,
