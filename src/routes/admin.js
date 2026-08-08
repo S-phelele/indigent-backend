@@ -480,6 +480,9 @@ router.get('/analytics/full', async (req, res) => {
       totalHouseholdIncome: true, employmentStatus: true, maritalStatus: true,
       captureChannel: true, capturedById: true, capturedWard: true,
       residentialAddress: true, addressFormatted: true, addressLatitude: true,
+      age: true, sex: true, hasDisability: true,
+      difficultySeeing: true, difficultyHearing: true, difficultyWalking: true,
+      difficultyRemembering: true, difficultySelfCare: true, difficultyCommunicating: true,
     };
 
     const [
@@ -555,6 +558,7 @@ router.get('/analytics/full', async (req, res) => {
         turnaround: analytics.turnaround(decided, SLA_DAYS),
         queue: analytics.pendingAgeing(byStatus('PENDING'), SLA_DAYS, now),
         demographics: analytics.demographics(allApplications, now),
+        disability: analytics.disability(allApplications),
         households: analytics.households(allApplications),
         income: analytics.income(allApplications, Number(eligibility.INCOME_THRESHOLD)),
         channels: analytics.channels(allApplications),

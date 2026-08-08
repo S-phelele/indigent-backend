@@ -1,4 +1,5 @@
 const saId = require('./saIdNumber');
+const functioning = require('./functioning');
 
 /**
  * Statistics for the administrator's analytics page.
@@ -421,7 +422,19 @@ function councillorPerformance(applications, councillors) {
     .sort((a, b) => b.captured - a.captured);
 }
 
+/**
+ * Disability prevalence, using the Washington Group identifier.
+ *
+ * Reported against those who answered the six questions rather than against
+ * everybody, so the figure is a rate and not an artefact of how many people
+ * have been asked so far.
+ */
+function disability(applications = []) {
+  return functioning.prevalence(applications);
+}
+
 module.exports = {
+  disability,
   percentile,
   mean,
   daysBetween,

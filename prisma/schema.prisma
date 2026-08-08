@@ -159,6 +159,20 @@ enum CheckOutcome {
   NOT_APPLICABLE
 }
 
+/// The Washington Group Short Set four-point scale, used verbatim so the
+/// municipality's figures are comparable with Statistics South Africa's.
+enum DifficultyLevel {
+  NO_DIFFICULTY
+  SOME_DIFFICULTY
+  A_LOT_OF_DIFFICULTY
+  CANNOT_DO_AT_ALL
+}
+
+enum Sex {
+  FEMALE
+  MALE
+}
+
 enum ApplicationStatus {
   DRAFT
   PENDING
@@ -320,6 +334,35 @@ model Application {
   employerAddress       String?
   workTelNumber         String?
   cellVerified          Boolean           @default(false)
+
+  // --- Derived from the ID number -------------------------------------------
+  //
+  // Date of birth, age and sex are all encoded in the first ten digits of a
+  // South African ID number. Asking for them separately only creates a second
+  // answer to contradict the first, and one more thing to get wrong on a form
+  // somebody is already struggling with. Stored rather than computed on read so
+  // that reporting can group and filter on them without parsing every ID.
+  dateOfBirth           DateTime?
+  age                   Int?
+  sex                   Sex?
+
+  // --- Functioning: the Washington Group Short Set ---------------------------
+  //
+  // Six domains, one scale. Asking about difficulty rather than about
+  // "disability" gets a truthful answer from people who would not describe
+  // themselves as disabled but have substantial functional limitations.
+  // See src/lib/functioning.js for the wording and the threshold.
+  difficultySeeing        DifficultyLevel?
+  difficultyHearing       DifficultyLevel?
+  difficultyWalking       DifficultyLevel?
+  difficultyRemembering   DifficultyLevel?
+  difficultySelfCare      DifficultyLevel?
+  difficultyCommunicating DifficultyLevel?
+
+  /// The Washington Group identifier: a lot of difficulty, or cannot do at all,
+  /// in at least one domain. Null when the questions were not answered — "no
+  /// disability" and "not asked" are different facts.
+  hasDisability         Boolean?
 
   /// Ward the property falls in, as stated by the applicant or set at capture.
   /// Distinct from capturedWard, which records who did the capturing.
@@ -516,6 +559,8 @@ model Application {
   @@index([captureChannel])
   @@index([verificationStage])
   @@index([approvalStage])
+  @@index([hasDisability])
+  @@index([age])
   @@index([expiresAt])
   @@index([renewalStatus])
   @@index([wardNumber])

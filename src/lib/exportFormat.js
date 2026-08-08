@@ -1,4 +1,5 @@
 const chain = require('./approvalChain');
+const functioning = require('./functioning');
 const renewal = require('./renewal');
 
 /**
@@ -30,6 +31,11 @@ const LABELS = {
   },
   captureChannel: { SELF: 'Applied themselves', COUNCILLOR: 'Councillor capture', ADMIN: 'Office capture' },
   meansTestResult: { QUALIFIES: 'Qualifies', ABOVE_THRESHOLD: 'Above threshold', INSUFFICIENT_DATA: 'Insufficient data' },
+  sex: { FEMALE: 'Female', MALE: 'Male' },
+  difficulty: {
+    NO_DIFFICULTY: 'No difficulty', SOME_DIFFICULTY: 'Some difficulty',
+    A_LOT_OF_DIFFICULTY: 'A lot of difficulty', CANNOT_DO_AT_ALL: 'Cannot do at all',
+  },
   renewalStatus: {
     NOT_APPLICABLE: '', ACTIVE: 'Active', DUE_SOON: 'Due soon', OVERDUE: 'Overdue', LAPSED: 'Lapsed',
   },
@@ -57,6 +63,9 @@ const APPLICATION_COLUMNS = [
   ['First names', (a) => a.names || ''],
   ['ID number', (a) => (a.idNumber ? `="${a.idNumber}"` : '')],
   ['Cell number', (a) => (a.cellNumber ? `="${a.cellNumber}"` : '')],
+  ['Date of birth', (a) => date(a.dateOfBirth)],
+  ['Age', (a) => a.age ?? ''],
+  ['Sex', (a) => label('sex', a.sex)],
   ['Status', (a) => label('status', a.status)],
   ['Stage', (a) => (a.approvalStage === 'COMPLETE' ? '' : chain.config(a.approvalStage)?.label || '')],
   ['Ward', (a) => a.wardNumber || ''],
@@ -86,6 +95,10 @@ const APPLICATION_COLUMNS = [
   ['Renewal status', (a) => label('renewalStatus', a.renewalStatus)],
   ['Times renewed', (a) => a.renewalCount ?? 0],
   ['Owns other property', (a) => yesNo(a.ownsOtherProperty)],
+  ['Has a disability', (a) => yesNo(a.hasDisability)],
+  ...functioning.DOMAINS.map((d) => [
+    `Difficulty: ${d.label}`, (a) => label('difficulty', a[d.field]),
+  ]),
   ['Consent given', (a) => yesNo(a.consentSiteVisit && a.consentDataMatching && a.declarationTruthful)],
   ['Review notes', (a) => a.reviewNotes || ''],
 ];
@@ -139,6 +152,9 @@ function printableSections(application, { meansTest = null } = {}) {
       fields: [
         ['Full name', full],
         ['ID number', or(a.idNumber)],
+        ['Date of birth', date(a.dateOfBirth) || 'Not stated'],
+        ['Age', or(a.age)],
+        ['Sex', label('sex', a.sex) || 'Not stated'],
         ['Cell number', or(a.cellNumber)],
         ['Marital status', label('maritalStatus', a.maritalStatus) || 'Not stated'],
         ['Employment', label('employmentStatus', a.employmentStatus) || 'Not stated'],
@@ -202,6 +218,19 @@ function printableSections(application, { meansTest = null } = {}) {
           ],
         }]
       : []),
+    {
+      title: 'Functioning',
+      fields: functioning.DOMAINS.map((d) => [
+        d.label, label('difficulty', a[d.field]) || 'Not answered',
+      ]).concat([[
+        'Disability identifier',
+        a.hasDisability === null || a.hasDisability === undefined
+          ? 'Not answered'
+          : a.hasDisability
+            ? 'Meets the Washington Group threshold'
+            : 'Below the Washington Group threshold',
+      ]]),
+    },
     {
       title: 'Declaration and consent',
       fields: [

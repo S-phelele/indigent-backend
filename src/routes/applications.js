@@ -11,6 +11,7 @@ const notify = require('../lib/notify');
 const slots = require('../lib/documentSlots');
 const access = require('../lib/applicationAccess');
 const submission = require('../lib/submission');
+const functioning = require('../lib/functioning');
 const cache = require('../lib/cache');
 
 const router = express.Router();
@@ -239,6 +240,8 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       tenure: ['OWNER', 'TENANT', 'OCCUPIER'],
       incomeEvidence: ['PROOF_OF_INCOME', 'BANK_STATEMENTS', 'AFFIDAVIT'],
       applicantCategory: ['STANDARD', 'PENSIONER', 'DECEASED_ESTATE', 'CHILD_HEADED', 'DISABLED'],
+      // The six Washington Group domains all take the same four-point scale.
+      ...Object.fromEntries(functioning.FIELDS.map((field) => [field, functioning.SCALE_VALUES])),
     };
     for (const [key, allowed] of Object.entries(ENUMS)) {
       if (body[key] === undefined) continue;
@@ -248,6 +251,30 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
         return res.status(400).json({ success: false, message: `${key} must be one of: ${allowed.join(', ')}` });
       }
       updateData[key] = value;
+    }
+
+    /**
+     * Date of birth, age and sex.
+     *
+     * Recomputed whenever the ID number is set or corrected, never accepted
+     * from the client. They are already in the ID number, so taking them from
+     * the request would let the two disagree — and the ID number is the one a
+     * reviewer will check against the green book.
+     */
+    if (updateData.idNumber !== undefined) {
+      Object.assign(updateData, functioning.fromIdNumber(updateData.idNumber));
+    }
+
+    /**
+     * The Washington Group disability identifier.
+     *
+     * Derived from the six answers rather than asked, so it can never disagree
+     * with them. Recomputed against the answers as they will stand after this
+     * update, not as they were before it.
+     */
+    if (functioning.FIELDS.some((f) => f in updateData)) {
+      const merged = { ...application, ...updateData };
+      updateData.hasDisability = functioning.assess(merged).hasDisability;
     }
 
     /**
