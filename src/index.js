@@ -22,7 +22,9 @@ const householdRoutes = require('./routes/household');
 const approvalRoutes = require('./routes/approvals');
 const renewalRoutes = require('./routes/renewals');
 const exportRoutes = require('./routes/documentsOut');
+const privacyRoutes = require('./routes/privacy');
 const renewal = require('./lib/renewal');
+const retention = require('./lib/retention');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -110,6 +112,8 @@ app.use('/api/verification', verificationRoutes);
 app.use('/api/approvals', approvalRoutes);
 app.use('/api/renewals', renewalRoutes);
 app.use('/api/export', exportRoutes);
+// Partly public: the privacy notice must be readable before somebody registers.
+app.use('/api/privacy', privacyRoutes);
 // Mounted before the general admin router so its own paths win; admin.js has no
 // /staff route, so order is defensive rather than load-bearing.
 app.use('/api/admin/staff', staffRoutes);
@@ -203,6 +207,10 @@ const stopSlaMonitor = slaMonitor.schedule();
 // Registrations expire on a date nobody watches, so the sweep has to.
 const stopRenewalMonitor = renewal.schedule();
 
+// POPIA s14: information stops being needed on a date, not on a request. Reports
+// what is overdue; only removes it if RETENTION_AUTO_APPLY is explicitly on.
+const stopRetentionSweep = retention.schedule();
+
 // --- Graceful shutdown ------------------------------------------------------
 // Finish in-flight requests and close the connection pool, so deploys and
 // restarts do not sever open uploads or leak Postgres connections.
@@ -219,6 +227,7 @@ async function shutdown(signal) {
 
   stopSlaMonitor();
   stopRenewalMonitor();
+  stopRetentionSweep();
 
   server.close(async () => {
     try {

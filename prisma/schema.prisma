@@ -364,6 +364,18 @@ model Application {
   /// disability" and "not asked" are different facts.
   hasDisability         Boolean?
 
+  // --- Retention ------------------------------------------------------------
+  //
+  // When a record passes its retention period the identifying fields are
+  // stripped and these are set. The row survives, so ward-level demand history
+  // survives with it, but it stops being personal information — which takes it
+  // outside POPIA rather than merely making it compliant.
+  //
+  // Written onto the row so a reader knows it was deliberately stripped. A
+  // record full of nulls with no explanation looks like a capture failure.
+  anonymisedAt          DateTime?
+  anonymisedUnder       String?
+
   /// Ward the property falls in, as stated by the applicant or set at capture.
   /// Distinct from capturedWard, which records who did the capturing.
   wardNumber            String?
@@ -561,6 +573,9 @@ model Application {
   @@index([approvalStage])
   @@index([hasDisability])
   @@index([age])
+  /// The retention sweep filters on these; without the index it scans the table.
+  @@index([anonymisedAt])
+  @@index([status, reviewedAt])
   @@index([expiresAt])
   @@index([renewalStatus])
   @@index([wardNumber])
@@ -690,6 +705,8 @@ enum NotificationType {
   APPLICATION_BREACHED
   COUNCILLOR_CAPTURE
   RECOMMENDATION_READY
+  SUBJECT_REQUEST
+  SUBJECT_REQUEST_ANSWERED
   AWAITING_ASSESSMENT
   AWAITING_SIGNOFF
   RETURNED_FOR_REWORK
@@ -827,6 +844,45 @@ model FieldChange {
   @@index([actorId])
 }
 
+/// What a data subject asked for under POPIA.
+enum SubjectRequestType {
+  /// Section 23: what do you hold about me?
+  ACCESS
+  /// Section 24: this is wrong, correct it.
+  CORRECTION
+  /// Section 24: you no longer need this, delete it.
+  DELETION
+  /// Section 11(3): stop processing it.
+  OBJECTION
+}
+
+enum SubjectRequestStatus {
+  RECEIVED
+  IN_PROGRESS
+  /// Fulfilled, with what was provided recorded.
+  COMPLETED
+  /// Refused, with the lawful ground recorded. Refusing is allowed; refusing
+  /// without a stated reason is not.
+  REFUSED
+}
+
+/// How serious a breach was, which decides who has to be told.
+enum BreachSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum BreachStatus {
+  DETECTED
+  INVESTIGATING
+  CONTAINED
+  /// Regulator and data subjects notified, where required.
+  NOTIFIED
+  CLOSED
+}
+
 enum SmsStatus {
   QUEUED
   SENT
@@ -864,6 +920,96 @@ model SmsMessage {
   @@index([toNumber])
   @@index([createdAt])
   @@index([status])
+}
+
+/// A request from a data subject about their own information.
+///
+/// POPIA gives people the right to ask what is held about them, to have it
+/// corrected, and in defined circumstances to have it deleted. A municipality
+/// that cannot answer those requests is not compliant however carefully it
+/// handles the data itself.
+///
+/// Tracked as records rather than handled ad hoc by email, because the Act sets
+/// response deadlines and "we think somebody dealt with it" is not an answer to
+/// the Information Regulator.
+model SubjectRequest {
+  id            String               @id @default(uuid())
+
+  type          SubjectRequestType
+  status        SubjectRequestStatus @default(RECEIVED)
+
+  /// The account making the request, where they have one. Not a foreign key:
+  /// a deletion request must survive the deletion it asked for, or the
+  /// municipality cannot show it complied.
+  subjectUserId String?
+  subjectName   String?
+  subjectEmail  String?
+  subjectIdNumber String?
+
+  /// What they asked, in their words.
+  request       String
+  /// What they want corrected, for a correction request.
+  correctionDetail String?
+
+  /// Who handled it and what they did.
+  handledById   String?
+  handledByName String?
+  responseNotes String?
+  /// The lawful ground, when a request is refused. Required by the route.
+  refusalGround String?
+
+  receivedAt    DateTime             @default(now())
+  /// POPIA expects a response without undue delay; the municipality's own
+  /// standard is recorded here so overdue requests can be surfaced.
+  dueAt         DateTime?
+  completedAt   DateTime?
+
+  @@index([status, receivedAt])
+  @@index([subjectUserId])
+  @@index([subjectIdNumber])
+}
+
+/// A security compromise, and what was done about it.
+///
+/// POPIA section 22 requires notification of the Information Regulator and the
+/// affected data subjects as soon as reasonably possible after a compromise is
+/// discovered. That obligation is impossible to meet from memory, so the register
+/// keeps the record: what happened, who was affected, when each party was told.
+///
+/// An empty breach register is the correct state. Having one is not an admission
+/// that anything has gone wrong — it is what makes a timely response possible if
+/// it ever does.
+model DataBreach {
+  id            String         @id @default(uuid())
+
+  title         String
+  description   String
+  severity      BreachSeverity @default(MEDIUM)
+  status        BreachStatus   @default(DETECTED)
+
+  /// What kind of information was exposed, and roughly how many people.
+  dataAffected  String?
+  peopleAffected Int?
+
+  detectedAt    DateTime       @default(now())
+  occurredAt    DateTime?
+  containedAt   DateTime?
+
+  /// Section 22 notifications, each with its own date because they are separate
+  /// obligations with separate deadlines.
+  regulatorNotifiedAt DateTime?
+  subjectsNotifiedAt  DateTime?
+
+  reportedById  String?
+  reportedByName String?
+  /// What was done, and what changed so it does not recur.
+  remediation   String?
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status, detectedAt])
+  @@index([severity])
 }
 
 model Document {

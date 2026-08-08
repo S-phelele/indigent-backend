@@ -8,6 +8,7 @@
     "dev": "nodemon src/index.js",
     "test": "node --test tests/",
     "test:watch": "node --test --watch tests/",
+    "verify:audit": "node scripts/verify-audit-immutability.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
