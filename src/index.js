@@ -82,17 +82,49 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
 // --- CORS -------------------------------------------------------------------
 // An explicit allowlist. `origin: true` reflects whatever origin asks, which
 // with credentials enabled is effectively no protection at all.
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:5174')
+//
+// Entries must carry a scheme. An `Origin` header is always `scheme://host[:port]`,
+// so a bare `192.168.1.10:8081` can never match anything a client actually sends.
+const allowedOrigins = (
+  process.env.CORS_ORIGINS
+  || 'http://localhost:5173,http://localhost:5174,http://localhost:8081'
+)
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
+/**
+ * In development only, accept any origin on a private network.
+ *
+ * Expo serves its web build and its dev tooling from the laptop's LAN address,
+ * and that address comes from DHCP — it changes. Pinning today's IP in the
+ * allowlist means the setup breaks on the next lease, at which point somebody
+ * pastes in a wildcard and never takes it out again.
+ *
+ * Restricted to the RFC 1918 ranges plus loopback, so it can only ever admit a
+ * machine already on the same network, and switched off entirely in production:
+ * a municipal server has no business trusting a caller merely for being nearby.
+ */
+const PRIVATE_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
+const allowPrivateNetwork = process.env.NODE_ENV !== 'production';
+
 app.use(
   cors({
     origin(origin, callback) {
-      // Same-origin and non-browser clients (curl, server-to-server) send no Origin.
+      /**
+       * No Origin at all: same-origin, curl, server-to-server — and every native
+       * mobile request.
+       *
+       * React Native is not a browser and sends no Origin, so CORS never applies
+       * to the Expo app on a device or emulator. A request from the app that is
+       * failing is failing for another reason: the API address it was given, the
+       * firewall, or Android refusing plain HTTP.
+       */
       if (!origin) return callback(null, true);
+
       if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (allowPrivateNetwork && PRIVATE_ORIGIN.test(origin)) return callback(null, true);
+
       return callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
@@ -214,6 +246,14 @@ process.on('uncaughtException', (error) => {
 const server = app.listen(PORT, () => {
   console.log(`Indigent Register API running on http://localhost:${PORT}`);
   console.log(`CORS allowlist: ${allowedOrigins.join(', ')}`);
+  if (allowPrivateNetwork) {
+    // Said out loud so nobody mistakes a development convenience for the
+    // production posture, and so a stray NODE_ENV is obvious at a glance.
+    console.log('CORS: also accepting any private-network origin (development only)');
+  }
+  // Mobile devices reach the API on the LAN address, not localhost, and this is
+  // the setting people most often get wrong when the app "cannot connect".
+  console.log(`Mobile app should use: http://<this-machine-lan-ip>:${PORT}/api`);
 });
 
 // A breach is caused by the absence of action, so nothing in the request path
