@@ -13,6 +13,9 @@ const sms = require('../lib/sms');
 const smsTemplates = require('../lib/smsTemplates');
 const slots = require('../lib/documentSlots');
 const analytics = require('../lib/analytics');
+const chain = require('../lib/approvalChain');
+const signature = require('../lib/signature');
+const meansTest = require('../lib/meansTest');
 const { passwordProblems, temporaryPassword } = require('../lib/credentials');
 const cache = require('../lib/cache');
 const { staffLimiter, exportLimiter } = require('../lib/rateLimit');
@@ -803,6 +806,21 @@ router.get('/applications/:id', async (req, res) => {
         user: {
           select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true, idNumber: true },
         },
+        /**
+         * The whole case file, not just the form.
+         *
+         * These were missing, so an administrator opening an application saw the
+         * household's answers and nothing about how it had been decided — no
+         * stages, no officers, no reasons, no signature. That is the half of the
+         * record the municipality is actually accountable for: at audit the
+         * question is never "what did they declare?" but "who approved this, on
+         * what basis, and can you show me".
+         */
+        approvalSteps: { orderBy: { sequence: 'asc' } },
+        household: { orderBy: { createdAt: 'asc' } },
+        siteVisits: { orderBy: { attempt: 'asc' } },
+        checks: { orderBy: { checkedAt: 'desc' } },
+        capturedBy: { select: { id: true, firstName: true, lastName: true, ward: true } },
       },
     });
 
@@ -819,7 +837,34 @@ router.get('/applications/:id', async (req, res) => {
 
     res.json({
       success: true,
-      data: { ...application, eligibility: eligibility.assess(application) },
+      data: {
+        ...application,
+        eligibility: eligibility.assess(application),
+        /**
+         * The approval chain, described.
+         *
+         * Assembled here rather than in the browser so the administrator's view
+         * and the approver's view read identically — the same stage labels, the
+         * same wording for an outcome. Two screens describing one decision in two
+         * vocabularies is how an audit finding starts.
+         */
+        trail: chain.describeTrail(application.approvalSteps),
+        position: chain.position(application, { steps: application.approvalSteps, user: req.user }),
+        meansTest: meansTest.assess(application, {
+          checks: application.checks,
+          household: application.household,
+        }),
+        /**
+         * Signatures, with the evidence around them.
+         *
+         * An electronic signature under ECTA is only worth as much as what can be
+         * shown about the circumstances it was made in, so the name, the moment
+         * and the address travel with the image rather than the image alone.
+         */
+        signatures: application.approvalSteps
+          .filter((s) => s.signature)
+          .map((s) => ({ ...signature.describe(s), image: s.signature, stage: s.stage })),
+      },
     });
   } catch (error) {
     console.error('admin/applications/:id error:', error);

@@ -264,10 +264,94 @@ function describeStep(step) {
   }
 }
 
+/**
+ * The whole history of a case, ready to render.
+ *
+ * Every screen that shows an application needs the same three answers about each
+ * step — who acted, what they decided, and why — and until this existed each one
+ * assembled them differently, or not at all. The administrator's view showed no
+ * approvals whatsoever, so the half of the record the municipality is actually
+ * accountable for was invisible on the screen an audit would open first.
+ *
+ * `why` is the part that matters and the part most easily lost. An outcome with
+ * no reason is not a decision anybody can defend, so the officer's notes are
+ * carried through verbatim rather than summarised, and a return carries the
+ * reason it was sent back.
+ *
+ * Steps that are open but undecided are included deliberately: "this has been
+ * sitting with an assessment officer since Tuesday" is exactly what somebody
+ * asking about a delay needs to see.
+ */
+function describeTrail(steps = []) {
+  return [...steps]
+    .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+    .map((step) => {
+      const stageConfig = config(step.stage);
+      const decided = Boolean(step.decidedAt);
+
+      return {
+        id: step.id,
+        sequence: step.sequence,
+        stage: step.stage,
+        stageLabel: stageConfig?.label || step.stage,
+
+        outcome: step.outcome,
+        outcomeLabel: OUTCOME_LABEL[step.outcome] || step.outcome,
+        /** Green, amber or red, so the shape carries the outcome as well as the word. */
+        tone: OUTCOME_TONE[step.outcome] || 'neutral',
+
+        // Denormalised on the step, so the trail survives the account being
+        // deleted — which is the point at which a name is most needed.
+        who: step.actorName || 'A municipal official',
+        role: step.actorRole ? humanRole(step.actorRole) : null,
+
+        why: step.notes || step.returnReason || null,
+        returnedTo: step.returnedTo ? (config(step.returnedTo)?.label || step.returnedTo) : null,
+
+        startedAt: step.startedAt,
+        decidedAt: step.decidedAt,
+        decided,
+        /** How long this stage held the case; null while it still has it. */
+        daysTaken: decided && step.startedAt
+          ? Math.max(0, Math.round((new Date(step.decidedAt) - new Date(step.startedAt)) / 86400000))
+          : null,
+
+        signed: Boolean(step.signature),
+        signatureName: step.signatureName || null,
+        signedAt: step.signedAt || null,
+
+        sentence: describeStep(step),
+      };
+    });
+}
+
+const OUTCOME_LABEL = {
+  PENDING: 'In progress',
+  RECOMMEND_APPROVE: 'Recommended approval',
+  RECOMMEND_REJECT: 'Recommended refusal',
+  APPROVED: 'Approved',
+  REJECTED: 'Refused',
+  RETURNED: 'Sent back',
+};
+
+const OUTCOME_TONE = {
+  PENDING: 'pending',
+  RECOMMEND_APPROVE: 'approved',
+  RECOMMEND_REJECT: 'declined',
+  APPROVED: 'approved',
+  REJECTED: 'declined',
+  RETURNED: 'draft',
+};
+
+const humanRole = (role) => String(role).replace(/_/g, ' ').toLowerCase()
+  .replace(/^./, (c) => c.toUpperCase());
+
 module.exports = {
   STAGES,
   STAGE_CONFIG,
   ROLE_STAGE,
+  OUTCOME_LABEL,
+  OUTCOME_TONE,
   stageForRole,
   config,
   canAct,
@@ -277,4 +361,5 @@ module.exports = {
   returnTo,
   returnableStages,
   describeStep,
+  describeTrail,
 };

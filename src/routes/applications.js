@@ -151,7 +151,19 @@ router.get('/:id/timeline', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: {
+        documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] },
+        /**
+         * The approval steps, for the stage dates only.
+         *
+         * `timeline.stages()` reads the decided-at times so an applicant can see
+         * that verification finished on a real date rather than being told
+         * vaguely that their application is "with the municipality". Officers are
+         * never named to an applicant — the steps are used for timing and nothing
+         * else, and `events()` filters the audit trail on the same principle.
+         */
+        approvalSteps: { select: { stage: true, decidedAt: true }, orderBy: { sequence: 'asc' } },
+      },
     });
 
     if (!application) {

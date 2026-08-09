@@ -102,17 +102,19 @@ function stages(application) {
       at: application.submittedAt,
       state: submitted ? 'done' : documentsComplete && detailsComplete ? 'current' : 'upcoming',
     },
-    {
-      key: STAGE.REVIEW,
-      label: 'Municipal review',
-      description: decided
-        ? 'A municipal official reviewed your application.'
-        : submitted
-          ? 'An official will review your application. This usually takes up to 14 days.'
-          : 'Review begins once you submit.',
-      at: null,
-      state: decided ? 'done' : submitted ? 'current' : 'upcoming',
-    },
+    /**
+     * The approval chain, one row per stage.
+     *
+     * This used to be a single "Municipal review" step, which told an applicant
+     * only that their application was somewhere inside the municipality. Three
+     * rows means somebody waiting can see it has moved — verification finished,
+     * now with an assessment officer — which is the difference between a system
+     * that feels stalled and one that is visibly working.
+     *
+     * Officers are never named. The applicant is told the stage and nothing about
+     * who holds it; `events()` applies the same rule to the audit trail.
+     */
+    ...approvalStages(application, { submitted, decided }),
     {
       key: STAGE.DECISION,
       label: 'Outcome',
@@ -128,6 +130,79 @@ function stages(application) {
   ];
 
   return list;
+}
+
+/**
+ * The three approval stages as an applicant may see them.
+ *
+ * Described by what is happening to their application rather than by the
+ * municipality's internal vocabulary: "somebody is checking what you told us" is
+ * the same event as VERIFICATION, and only one of those means anything to a
+ * household.
+ *
+ * A stage the application has already passed is `done`, the one holding it is
+ * `current`, the rest are `upcoming`. Dates come from the approval steps where
+ * they exist, so "verification finished on Tuesday" is real rather than implied.
+ */
+function approvalStages(application, { submitted, decided }) {
+  const ORDER = ['VERIFICATION', 'ASSESSMENT', 'SUPERVISOR_SIGNOFF'];
+
+  const COPY = {
+    VERIFICATION: {
+      label: 'Checking your details',
+      waiting: 'An officer is confirming what you told us, and may visit the property.',
+      done: 'Your details were checked and confirmed.',
+      upcoming: 'An officer will confirm what you told us.',
+    },
+    ASSESSMENT: {
+      label: 'Working out if you qualify',
+      waiting: 'Your household income is being measured against the municipal threshold.',
+      done: 'Your household income was assessed.',
+      upcoming: 'Your household income will be measured against the municipal threshold.',
+    },
+    SUPERVISOR_SIGNOFF: {
+      label: 'Final sign-off',
+      waiting: 'A supervisor is making the final decision.',
+      done: 'A supervisor signed the decision.',
+      upcoming: 'A supervisor makes the final decision.',
+    },
+  };
+
+  const steps = Array.isArray(application.approvalSteps) ? application.approvalSteps : [];
+  const stage = application.approvalStage;
+  const reached = ORDER.indexOf(stage);
+
+  return ORDER.map((key, i) => {
+    // The most recent decided step for this stage, so a case that looped shows
+    // the outcome that stuck rather than the first attempt.
+    const step = [...steps]
+      .filter((s) => s.stage === key && s.decidedAt)
+      .sort((a, b) => new Date(b.decidedAt) - new Date(a.decidedAt))[0];
+
+    // Once decided, everything is behind us; otherwise position in the chain.
+    const passed = decided || (reached >= 0 && i < reached) || Boolean(step);
+    const current = !decided && reached === i;
+
+    /**
+     * Being here now beats having been here before.
+     *
+     * An application sent back to an earlier stage has a decided step for it
+     * already, so testing `passed` first would show the stage holding the case
+     * as finished — telling a household their details were checked while an
+     * officer is in the middle of checking them again.
+     */
+    const state = !submitted ? 'upcoming' : current ? 'current' : passed ? 'done' : 'upcoming';
+
+    return {
+      key: `APPROVAL_${key}`,
+      label: COPY[key].label,
+      description: state === 'done' ? COPY[key].done
+        : state === 'current' ? COPY[key].waiting
+          : COPY[key].upcoming,
+      at: step?.decidedAt ?? null,
+      state,
+    };
+  });
 }
 
 /** What the applicant should do next, or null when nothing is waiting on them. */

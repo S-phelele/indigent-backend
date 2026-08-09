@@ -179,6 +179,15 @@ router.get('/applications/:id', respond.handler(async (req, res) => {
     data: {
       ...application,
       position: chain.position(application, { steps: application.approvalSteps, user: req.user }),
+      /**
+       * What the officers before this one did, and why.
+       *
+       * An assessment officer needs the verifier's reasoning, not just their
+       * verdict — "recommended approval" on its own tells them nothing they can
+       * check, and a supervisor signing off is accountable for a chain they can
+       * actually read. Same description the administrator's view uses.
+       */
+      trail: chain.describeTrail(application.approvalSteps),
       meansTest: meansTest.assess(application, {
         checks: application.checks,
         household: application.household,
