@@ -13,9 +13,12 @@
     "demo:seed": "node scripts/seed-demo-staff.js",
     "demo:remove": "node scripts/seed-demo-staff.js --remove",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
-    "db:seed": "node prisma/seed.js"
+    "db:seed": "node prisma/seed.js",
+    "db:setup": "node scripts/db-setup.js",
+    "db:demo:remove": "node prisma/seed.js --remove",
+    "db:reset": "prisma migrate reset --force",
+    "db:studio": "prisma studio"
   },
   "keywords": [
     "indigent",
@@ -40,5 +43,8 @@
   "devDependencies": {
     "nodemon": "^3.1.0",
     "prisma": "^6.0.0"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
   }
 }

@@ -77,6 +77,32 @@ async function main() {
 
   // -------------------------------------------------------------------------
   console.log('The audit log:');
+
+  /**
+   * A probe row first, so there is something for the trigger to fire on.
+   *
+   * `UPDATE` and `DELETE` triggers are row-level: against an empty table they
+   * never fire, the statement affects nothing and succeeds — which this script
+   * would read as the guard being absent. On a freshly built database, where the
+   * audit log is genuinely empty, that reported the audit trail as unprotected
+   * when it was fine. A false alarm on a new developer's first run is worse than
+   * no check at all, because the next real failure gets ignored too.
+   *
+   * TRUNCATE is statement-level and fires either way, which is why it was the
+   * only one of the three that passed.
+   */
+  // Unique per run. A previous run that failed before its cleanup would
+  // otherwise leave a row this one collides with — and the collision is
+  // unfixable by ordinary means, because the row cannot be deleted.
+  const auditProbeId = `${PROBE}-audit-${Date.now()}`;
+  await prisma.auditLog.create({
+    data: {
+      id: auditProbeId,
+      action: 'AUDIT_IMMUTABILITY_PROBE',
+      details: 'Written and removed by scripts/verify-audit-immutability.js',
+    },
+  });
+
   await mustRefuse('UPDATE is refused', () => prisma.$executeRaw`UPDATE "AuditLog" SET action = 'tampered' WHERE true`);
   await mustRefuse('DELETE is refused', () => prisma.$executeRaw`DELETE FROM "AuditLog" WHERE true`);
   await mustRefuse('TRUNCATE is refused', () => prisma.$executeRawUnsafe('TRUNCATE "AuditLog"'));
@@ -142,6 +168,22 @@ async function main() {
 
     await mustRefuse('DELETE is refused again outside a sweep',
       () => prisma.$executeRaw`DELETE FROM "AuditLog" WHERE true`);
+  }
+
+  /**
+   * Take the audit probe back out, through the only path that can.
+   *
+   * The whole point of the triggers is that an audit row cannot be removed by
+   * ordinary means, so this goes through the same audited sweep the retention
+   * policy uses. Leaving it behind would mean a verification script quietly
+   * adding a row to the compliance record every time anybody ran it.
+   */
+  try {
+    const removed = await withSweepFlag((tx) =>
+      tx.auditLog.deleteMany({ where: { id: auditProbeId } }));
+    check('the audit probe is cleaned up afterwards', removed.count === 1, 'removed through a sweep');
+  } catch (error) {
+    check('the audit probe is cleaned up afterwards', false, error.message.slice(0, 120));
   }
 
   // -------------------------------------------------------------------------
