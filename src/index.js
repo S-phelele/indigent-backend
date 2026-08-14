@@ -30,6 +30,37 @@ const loginSecurity = require('./lib/loginSecurity');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+/**
+ * NODE_ENV must be stated, not assumed.
+ *
+ * Several protections are keyed on it and every one of them fails open when it
+ * is unset: `exposeDemoCode()` in routes/auth.js puts the live six-digit code in
+ * the body of send-otp and forgot-password responses, private-network origins
+ * are accepted by CORS, and the JWT_SECRET check downgrades from fatal to a
+ * warning. A municipal server started with a bare `node src/index.js` therefore
+ * hands out password-reset codes to anyone who can reach the endpoint.
+ *
+ * Refusing to start is the only safe default: guessing "production" would break
+ * every developer's machine, and guessing "development" is the bug itself.
+ */
+const ENVIRONMENTS = ['development', 'test', 'production'];
+if (!process.env.NODE_ENV) {
+  console.error(
+    'FATAL: NODE_ENV is not set. Set it to one of: '
+    + `${ENVIRONMENTS.join(', ')}. Several protections — demo OTP codes, CORS `
+    + 'private-network access, and the JWT_SECRET check — are keyed on it and '
+    + 'fail open when it is missing.'
+  );
+  process.exit(1);
+}
+if (!ENVIRONMENTS.includes(process.env.NODE_ENV)) {
+  console.error(
+    `FATAL: NODE_ENV is "${process.env.NODE_ENV}", which is not one of: ${ENVIRONMENTS.join(', ')}. `
+    + 'Anything other than "production" is treated as development and exposes demo OTP codes.'
+  );
+  process.exit(1);
+}
+
 // --- Fail fast on an unsafe secret -----------------------------------------
 // A placeholder JWT secret in production means anyone can mint a valid admin
 // token. Refuse to start rather than run in that state.

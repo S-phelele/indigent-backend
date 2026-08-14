@@ -15,6 +15,18 @@ datasource db {
 enum Role {
   APPLICANT
 
+  /// Does everything: every screen, every stage, every administrative function.
+  ///
+  /// Separation of duties does not bind it, so one superuser can take a case
+  /// from capture through verification and assessment to a signed approval on
+  /// their own. That is deliberate and was chosen over the safer alternative.
+  ///
+  /// Because the code no longer holds that control, the record does: each stage
+  /// taken on a case this account has already worked is written to the approval
+  /// step and the audit trail as an override. Grant the role sparingly — one
+  /// account holding it is sufficient to manufacture an approved registration.
+  SUPERUSER
+
   /// Ward councillor. Captures applications door to door for residents who
   /// cannot complete the form themselves.
   COUNCILLOR
@@ -855,6 +867,16 @@ model ApprovalStep {
   /// Set when the outcome is RETURNED: which stage it went back to, and why.
   returnedTo    ApprovalStage?
   returnReason  String?
+
+  /// True when the actor took this stage on a case they had already worked.
+  ///
+  /// Only ADMIN and SUPERUSER can reach this state; every other role is refused.
+  /// For those two the exemption is the entire control, so it is recorded rather
+  /// than passed over in silence — an auditor asking who walked a case through
+  /// alone must not find an unremarkable-looking trail.
+  isOverride       Boolean       @default(false)
+  /// What was overridden, in words: the earlier stage, or that they captured it.
+  overrideReason   String?
 
   /// Drawn signature, held as a data URI. Only the supervisor's sign-off step
   /// carries one; see src/lib/signature.js for what is accepted and why.

@@ -117,7 +117,24 @@ const authenticate = async (req, res, next) => {
  * not confirm anything about the account to somebody probing endpoints.
  */
 const requireRole = (...roles) => (req, res, next) => {
-  if (!roles.includes(req.user?.role)) {
+  const role = req.user?.role;
+
+  /**
+   * SUPERUSER satisfies every staff role check.
+   *
+   * The role exists to do everything, and spelling that out at each of the
+   * several dozen call sites would guarantee one gets missed — which fails in
+   * the confusing direction, where a role documented as omnipotent is refused a
+   * single screen for no visible reason.
+   *
+   * APPLICANT is deliberately excluded. It is not a privilege to be inherited
+   * but a different kind of account: the applicant routes act on whoever is
+   * signed in as the owner of the record, and a staff account owning
+   * applications of its own is a category error, not extra power.
+   */
+  if (role === 'SUPERUSER' && !roles.includes('APPLICANT')) return next();
+
+  if (!roles.includes(role)) {
     return res.status(403).json({ success: false, message: 'You do not have access to this area' });
   }
   next();
@@ -127,7 +144,7 @@ const requireAdmin = requireRole('ADMIN');
 const requireApplicant = requireRole('APPLICANT');
 
 /** Anyone who works for the municipality rather than applying to it. */
-const STAFF_ROLES = ['ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
+const STAFF_ROLES = ['SUPERUSER', 'ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
 const requireStaff = requireRole(...STAFF_ROLES);
 
 /** Roles that may capture an application on somebody's behalf. */
@@ -137,7 +154,7 @@ const requireCapture = requireRole('ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER');
 const requireVerifier = requireRole('ADMIN', 'VERIFICATION_OFFICER');
 
 /** Roles that work a stage of the approval chain. */
-const APPROVER_ROLES = ['ADMIN', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
+const APPROVER_ROLES = ['SUPERUSER', 'ADMIN', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
 const requireApprover = requireRole(...APPROVER_ROLES);
 
 /**

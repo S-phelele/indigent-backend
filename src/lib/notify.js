@@ -106,23 +106,42 @@ async function toUser(userId, { type, title, body, link, entityType, entityId } 
 }
 
 /**
- * Send to every administrator.
+ * Send to everybody holding one of the given roles.
  *
- * `exceptUserId` skips the person who caused the event — an admin who creates an
- * applicant does not need telling that an applicant was created.
+ * This is what was missing. Only `toUser` and `toAdmins` existed, so an
+ * application entering the verification queue told the administrators and no
+ * verification officer at all — an officer found out by going and looking. The
+ * notifications were not failing to arrive; nothing was sending them.
+ *
+ * Deactivated accounts are skipped. A councillor who has left office keeps their
+ * history, but filling their inbox with work they cannot act on is noise that
+ * makes the real notifications easier to ignore.
+ *
+ * `exceptUserId` skips the person who caused the event — nobody needs telling
+ * about something they just did themselves.
  */
-async function toAdmins({ type, title, body, link, entityType, entityId, exceptUserId } = {}) {
-  if (invalid('toAdmins', { type, title })) return 0;
+async function toRole(roles, { type, title, body, link, entityType, entityId, exceptUserId } = {}) {
+  const wanted = (Array.isArray(roles) ? roles : [roles]).filter(Boolean);
+  if (wanted.length === 0) {
+    console.error('[notify] toRole: no role given');
+    return 0;
+  }
+  if (invalid('toRole', { type, title })) return 0;
+
   try {
-    const admins = await prisma.user.findMany({
-      where: { role: 'ADMIN', ...(exceptUserId ? { NOT: { id: exceptUserId } } : {}) },
+    const recipients = await prisma.user.findMany({
+      where: {
+        role: { in: wanted },
+        isActive: true,
+        ...(exceptUserId ? { NOT: { id: exceptUserId } } : {}),
+      },
       select: { id: true },
     });
-    if (admins.length === 0) return 0;
+    if (recipients.length === 0) return 0;
 
     await prisma.notification.createMany({
-      data: admins.map((a) => ({
-        userId: a.id,
+      data: recipients.map((r) => ({
+        userId: r.id,
         type,
         title,
         body: body ?? null,
@@ -132,12 +151,43 @@ async function toAdmins({ type, title, body, link, entityType, entityId, exceptU
       })),
     });
 
-    await deliver({ type, title, userId: `${admins.length} admin(s)` });
-    return admins.length;
+    await deliver({ type, title, userId: `${recipients.length} × ${wanted.join('/')}` });
+    return recipients.length;
   } catch (error) {
-    console.error(`[notify] failed to notify admins of ${type}:`, error.message);
+    console.error(`[notify] failed to notify ${wanted.join('/')} of ${type}:`, error.message);
     return 0;
   }
 }
 
-module.exports = { toUser, toAdmins, TYPE };
+/**
+ * Send to every administrator.
+ *
+ * Superusers are included: the role exists to do everything, which includes
+ * being accountable for the register alongside the administrators.
+ */
+async function toAdmins(options = {}) {
+  return toRole(['ADMIN', 'SUPERUSER'], options);
+}
+
+/**
+ * The role that owns each stage of the approval chain, so a caller advancing an
+ * application does not have to know the org chart. Superusers are added to every
+ * stage because they can work any of them.
+ */
+const STAGE_ROLES = {
+  VERIFICATION: ['VERIFICATION_OFFICER', 'SUPERUSER'],
+  ASSESSMENT: ['ASSESSMENT_OFFICER', 'SUPERUSER'],
+  SUPERVISOR_SIGNOFF: ['SUPERVISOR', 'SUPERUSER'],
+};
+
+/** Tell whoever works `stage` that something has arrived for them. */
+async function toStage(stage, options = {}) {
+  const roles = STAGE_ROLES[stage];
+  if (!roles) {
+    console.error(`[notify] toStage: unknown stage ${JSON.stringify(stage)}`);
+    return 0;
+  }
+  return toRole(roles, options);
+}
+
+module.exports = { toUser, toRole, toStage, toAdmins, TYPE, STAGE_ROLES };

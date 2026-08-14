@@ -69,3 +69,35 @@ test('routes only emit notification types that exist', () => {
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Stage targeting
+//
+// Verification officers were never told about newly submitted applications
+// because there was no way to notify a role at all — only toUser and toAdmins
+// existed. These guard the mapping that replaced that.
+// ---------------------------------------------------------------------------
+
+test('every stage of the approval chain has officers to notify', () => {
+  const chain = require('../src/lib/approvalChain');
+  for (const stage of chain.STAGES.filter((s) => s !== 'COMPLETE')) {
+    const roles = notify.STAGE_ROLES[stage];
+    assert.ok(Array.isArray(roles) && roles.length > 0, `${stage} has nobody to notify`);
+  }
+});
+
+test('the role that works each stage is the one notified about it', () => {
+  assert.ok(notify.STAGE_ROLES.VERIFICATION.includes('VERIFICATION_OFFICER'));
+  assert.ok(notify.STAGE_ROLES.ASSESSMENT.includes('ASSESSMENT_OFFICER'));
+  assert.ok(notify.STAGE_ROLES.SUPERVISOR_SIGNOFF.includes('SUPERVISOR'));
+});
+
+test('a superuser is notified about every stage, since it can work any of them', () => {
+  for (const roles of Object.values(notify.STAGE_ROLES)) {
+    assert.ok(roles.includes('SUPERUSER'));
+  }
+});
+
+test('an unknown stage is refused rather than silently notifying nobody', async () => {
+  assert.equal(await notify.toStage('NOT_A_STAGE', { type: 'WELCOME', title: 'x' }), 0);
+});

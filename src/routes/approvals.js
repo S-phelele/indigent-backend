@@ -293,6 +293,10 @@ router.post('/applications/:id/decide', respond.handler(async (req, res) => {
         actorId: req.user.id,
         actorName: actorName(req.user),
         actorRole: req.user.role,
+        // Set only when an exempt role really did stack stages on this case.
+        // Everyone else was refused above and never reaches here.
+        isOverride: Boolean(prior.override),
+        overrideReason: prior.overrideReason || null,
         ...signatureFields,
       },
     });
@@ -323,8 +327,30 @@ router.post('/applications/:id/decide', respond.handler(async (req, res) => {
       : audit.ACTIONS.RECOMMEND_APPLICATION,
     entityType: 'Application',
     entityId: application.id,
-    details: `${stageConfig.label}: ${outcome}${notes ? ` — ${notes}` : ''}`,
+    details: `${stageConfig.label}: ${outcome}${notes ? ` — ${notes}` : ''}`
+      + (prior.override ? ` [SEPARATION OF DUTIES OVERRIDE — ${prior.overrideReason}]` : ''),
   });
+
+  /**
+   * An override is also worth an administrator's attention while it is
+   * happening, not only at audit time.
+   *
+   * This is the one event where the system has knowingly let a single person
+   * carry two stages of the same decision. Nobody is stopped, but nobody has to
+   * go looking for it either.
+   */
+  if (prior.override) {
+    await notify.toAdmins({
+      type: notify.TYPE.APPROVAL_ACTIVITY,
+      title: 'Separation of duties was overridden',
+      body: `${actorName(req.user)} (${req.user.role}) took ${stageConfig.label.toLowerCase()} on `
+        + `${updated.reference || updated.id.slice(0, 8)}. ${prior.overrideReason}.`,
+      link: `/applications/${application.id}`,
+      entityType: 'Application',
+      entityId: application.id,
+      exceptUserId: req.user.id,
+    });
+  }
 
   await announce(updated, { stageConfig, outcome, notes, actor: req.user, step });
 
@@ -651,26 +677,23 @@ async function announce(application, { stageConfig, outcome, notes, actor, step 
   const nextStage = chain.config(stageConfig.next);
   if (!nextStage) return;
 
-  const officers = await prisma.user.findMany({
-    where: { role: { in: nextStage.roles.filter((r) => r !== 'ADMIN') }, isActive: true },
-    select: { id: true },
-  });
-
   const type = stageConfig.next === 'ASSESSMENT'
     ? notify.TYPE.AWAITING_ASSESSMENT
     : notify.TYPE.AWAITING_SIGNOFF;
 
-  for (const officer of officers) {
-    await notify.toUser(officer.id, {
-      type,
-      title: `An application is ready for ${nextStage.label.toLowerCase()}`,
-      body: `${ref} was passed on by ${actorName(actor)} with a recommendation to `
-        + `${outcome === 'RECOMMEND_APPROVE' ? 'approve' : 'refuse'}.`,
-      link: `/approvals/${application.id}`,
-      entityType: 'Application',
-      entityId: application.id,
-    });
-  }
+  // One query and one insert rather than a find-then-loop. `toStage` knows which
+  // roles work each stage and skips deactivated accounts, so the org chart lives
+  // in one place instead of being re-derived at every call site.
+  await notify.toStage(stageConfig.next, {
+    type,
+    title: `An application is ready for ${nextStage.label.toLowerCase()}`,
+    body: `${ref} was passed on by ${actorName(actor)} with a recommendation to `
+      + `${outcome === 'RECOMMEND_APPROVE' ? 'approve' : 'refuse'}.`,
+    link: `/approvals/${application.id}`,
+    entityType: 'Application',
+    entityId: application.id,
+    exceptUserId: actor?.id,
+  });
 }
 
 module.exports = router;

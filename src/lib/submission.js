@@ -97,6 +97,27 @@ async function submit(application, { actor, capturedBy = null } = {}) {
     exceptUserId: actor?.id,
   });
 
+  /**
+   * Tell the officers who actually have to do something about it.
+   *
+   * This was the gap. Submission announced itself to administrators and to the
+   * applicant, and to nobody at the stage the application had just entered — so
+   * a verification officer only discovered new work by going and looking at
+   * their queue. Every later stage was told when a file reached it; the first
+   * one never was, which is why verification notifications appeared not to work.
+   */
+  await notify.toStage('VERIFICATION', {
+    type: notify.TYPE.APPLICATION_AWAITING_REVIEW,
+    title: 'An application is ready for verification',
+    body: capturedBy
+      ? `${applicantName} was captured by ${capturedBy.name}${capturedBy.ward ? ` (${capturedBy.ward})` : ''} — ${ref}.`
+      : `${applicantName} submitted ${ref}.`,
+    link: `/verification/${updated.id}`,
+    entityType: 'Application',
+    entityId: updated.id,
+    exceptUserId: actor?.id,
+  });
+
   await notify.toUser(updated.userId, {
     type: notify.TYPE.APPLICATION_SUBMITTED,
     title: 'Application submitted',

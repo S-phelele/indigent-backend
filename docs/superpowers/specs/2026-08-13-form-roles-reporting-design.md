@@ -10,7 +10,7 @@ Third of three specs from this session. See also
 
 | Question | Decision |
 |---|---|
-| Superuser | Full access to every stage and every screen, but the existing per-case separation rule still holds |
+| Superuser | Full access to everything, including every stage of one case. Separation of duties does not bind it; overrides are recorded |
 | Multi-name applicants | Add `fullName`, keep `surname`, derive initials |
 | Household roll versus occupant count | Warn while filling in, refuse at submission |
 | Income model | A proper `IncomeSource` table, one row per source |
@@ -162,21 +162,32 @@ copy. That extraction is the bulk of the work in this item.
 
 # 2. Roles and administration
 
-## 2.1 A superuser that cannot quietly decide alone
+## 2.1 A superuser that does everything
 
 Add `SUPERUSER` to `Role`. It reaches every screen, every stage and every
-administrative function, and can be assigned to any queue.
+administrative function, can be assigned to any queue, and **`separationOfDuties()`
+does not apply to it**. One super admin can take a case from capture through
+verification and assessment to signed approval on their own.
 
-**`separationOfDuties()` still applies to it.** A superuser may act at any stage
-of any case they have not already touched; they may not take a second stage on a
-case they have already worked.
+This was decided deliberately and against the recommendation recorded here, which
+was to let the superuser act at any stage except a second one on a case it had
+already touched. That recommendation was raised, considered and overruled; the
+requirement is a role that does everything, and that is what is built.
 
-This is the deliberate half-measure. The power that was actually asked for is
-"unblock anything, staff anything, see everything", and that is fully granted. The
-power withheld is one person walking a single case from capture to signed
-approval alone, which is the control that stops one official approving public
-money on their own signature. A municipality with three staff still functions;
-a single compromised or dishonest account still cannot manufacture an approval.
+What separation of duties was protecting: nobody approving public money on their
+own signature. With this role that control no longer exists in the code, so the
+audit trail becomes the only place it survives. Therefore:
+
+- Every stage a superuser takes on a case it has already worked is recorded with
+  `SUPERUSER_OVERRIDE` on the approval step and in the audit trail, naming the
+  officer, the stage and the prior stage they had already taken.
+- The approval trail renders those steps distinctly, so an administrator or an
+  auditor opening the case sees at a glance that one person walked it through.
+
+Nothing is blocked and nothing prompts. The override is recorded, not refused.
+
+Grant the role sparingly. An account with it is, on its own, sufficient to
+manufacture an approved indigent registration.
 
 ## 2.2 Staff roles come from the enum
 
@@ -256,8 +267,9 @@ printed on the report — a statistic without its criteria is not a statistic.
 - Initials derivation, including multi-part names, hyphenated names and one name.
 - Household roll versus `peopleOnProperty`: warn while drafting, refuse at submission.
 - `IncomeSource` totals feed the means test, including multiple rows of one type.
-- A superuser may act at a stage; a superuser who acted at one stage is refused
-  the next on the same case.
+- A superuser may take every stage of one case, and each stage after the first is
+  recorded as `SUPERUSER_OVERRIDE` in the approval step and the audit trail.
+- Every other role is still refused a second stage on a case it has worked.
 - Assignable roles are served from the enum, and cover every stage of the chain.
 - `POST /api/admin/applicants` is gone and refuses.
 - `notify.toRole` reaches every active holder of a role and nobody else.

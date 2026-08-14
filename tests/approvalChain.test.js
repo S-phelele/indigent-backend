@@ -265,3 +265,93 @@ test('an unnamed actor still reads as somebody', () => {
   const text = chain.describeStep({ stage: 'ASSESSMENT', outcome: 'APPROVED', actorName: null });
   assert.match(text, /A municipal official/);
 });
+
+// ---------------------------------------------------------------------------
+// The superuser exemption, and the record it leaves
+//
+// SUPERUSER was added so one person can run the whole chain on a small
+// municipality. That removes the control the chain exists to provide, so the
+// exemption has to be observable: these tests are what stop it going quiet
+// again after a refactor.
+// ---------------------------------------------------------------------------
+
+test('a superuser may take a stage on a case it already worked', () => {
+  const steps = [{ actorId: 'su1', stage: 'VERIFICATION', outcome: 'RECOMMEND_APPROVE' }];
+  const result = chain.priorInvolvement(
+    app({ approvalStage: 'ASSESSMENT' }),
+    user('SUPERUSER', 'su1'),
+    steps
+  );
+  assert.equal(result.ok, true);
+});
+
+test('stacking stages is reported as an override, not passed over in silence', () => {
+  const steps = [{ actorId: 'su1', stage: 'VERIFICATION', outcome: 'RECOMMEND_APPROVE' }];
+  const result = chain.priorInvolvement(
+    app({ approvalStage: 'ASSESSMENT' }),
+    user('SUPERUSER', 'su1'),
+    steps
+  );
+  assert.equal(result.override, true);
+  assert.equal(result.priorStage, 'VERIFICATION');
+  assert.match(result.overrideReason, /Verification/);
+});
+
+test('a superuser who captured the file is recorded as overriding too', () => {
+  const result = chain.priorInvolvement(
+    app({ capturedById: 'su1' }),
+    user('SUPERUSER', 'su1'),
+    []
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.override, true);
+  assert.match(result.overrideReason, /[Cc]aptured/);
+});
+
+test('an exempt role touching a file for the first time is not an override', () => {
+  const result = chain.priorInvolvement(app(), user('SUPERUSER', 'su1'), []);
+  assert.equal(result.ok, true);
+  assert.ok(!result.override, 'ordinary first-touch work must not be flagged');
+});
+
+test('an administrator is exempt on the same terms as a superuser', () => {
+  const steps = [{ actorId: 'ad1', stage: 'VERIFICATION', outcome: 'RECOMMEND_APPROVE' }];
+  const result = chain.priorInvolvement(
+    app({ approvalStage: 'ASSESSMENT' }),
+    user('ADMIN', 'ad1'),
+    steps
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.override, true);
+});
+
+test('every other role is still refused a second stage', () => {
+  const steps = [{ actorId: 'v1', stage: 'VERIFICATION', outcome: 'RECOMMEND_APPROVE' }];
+  const result = chain.priorInvolvement(
+    app({ approvalStage: 'ASSESSMENT' }),
+    user('ASSESSMENT_OFFICER', 'v1'),
+    steps
+  );
+  assert.equal(result.ok, false);
+  assert.ok(!result.override, 'a refusal is not an override');
+  assert.match(result.reason, /already acted/i);
+});
+
+test('a returned step does not count as having acted', () => {
+  const steps = [{ actorId: 'v1', stage: 'VERIFICATION', outcome: 'RETURNED' }];
+  const result = chain.priorInvolvement(
+    app({ approvalStage: 'ASSESSMENT' }),
+    user('ASSESSMENT_OFFICER', 'v1'),
+    steps
+  );
+  assert.equal(result.ok, true);
+});
+
+test('a superuser can work every stage of the chain', () => {
+  for (const stage of ['VERIFICATION', 'ASSESSMENT', 'SUPERVISOR_SIGNOFF']) {
+    assert.ok(
+      chain.config(stage).roles.includes('SUPERUSER'),
+      `SUPERUSER must be able to work ${stage}`
+    );
+  }
+});

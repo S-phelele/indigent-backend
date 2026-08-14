@@ -49,7 +49,7 @@ const STAGE_CONFIG = {
     key: 'VERIFICATION',
     label: 'Verification',
     question: 'Is what the household declared true?',
-    roles: ['VERIFICATION_OFFICER', 'ADMIN'],
+    roles: ['VERIFICATION_OFFICER', 'ADMIN', 'SUPERUSER'],
     /** What this stage produces: a recommendation, not a decision. */
     decides: false,
     next: 'ASSESSMENT',
@@ -60,7 +60,7 @@ const STAGE_CONFIG = {
     key: 'ASSESSMENT',
     label: 'Assessment',
     question: 'Does the household qualify, and can the budget carry it?',
-    roles: ['ASSESSMENT_OFFICER', 'ADMIN'],
+    roles: ['ASSESSMENT_OFFICER', 'ADMIN', 'SUPERUSER'],
     decides: false,
     next: 'SUPERVISOR_SIGNOFF',
     route: '/assessment',
@@ -69,7 +69,7 @@ const STAGE_CONFIG = {
     key: 'SUPERVISOR_SIGNOFF',
     label: 'Supervisor sign-off',
     question: 'Is the file sound, and will I sign for it?',
-    roles: ['SUPERVISOR', 'ADMIN'],
+    roles: ['SUPERVISOR', 'ADMIN', 'SUPERUSER'],
     /** The only stage that turns a recommendation into a decision. */
     decides: true,
     requiresSignature: true,
@@ -137,6 +137,9 @@ function canAct(application, user) {
   return { ok: true, stage: stageConfig };
 }
 
+/** Roles that may take a stage on a file they have already worked. */
+const EXEMPT_ROLES = ['ADMIN', 'SUPERUSER'];
+
 /**
  * Has this person already acted on this file at an earlier stage?
  *
@@ -144,19 +147,19 @@ function canAct(application, user) {
  * then assess it or sign it off — three stages carried by one person is a
  * single decision with extra paperwork.
  *
- * Administrators are exempt, because an administrator overriding a stuck file
- * is a deliberate, recorded act rather than a way of quietly stacking roles.
+ * Administrators and superusers are exempt. That exemption is the whole of the
+ * control in these two cases, so it does not pass silently: when an exempt role
+ * really is stacking stages, this returns `override` naming the earlier stage,
+ * and the caller writes it onto the approval step and into the audit trail.
+ * Nothing is refused — but nobody can later ask who walked a case through alone
+ * and find no answer.
+ *
  * Capture is checked separately, in applicationAccess.
  */
 function priorInvolvement(application, user, steps = []) {
-  if (user.role === 'ADMIN') return { ok: true };
+  const exempt = EXEMPT_ROLES.includes(user.role);
 
-  if (application.capturedById === user.id) {
-    return {
-      ok: false,
-      reason: 'You captured this application, so you cannot also approve it.',
-    };
-  }
+  const captured = application.capturedById === user.id;
 
   const earlier = steps.find(
     (s) => s.actorId === user.id
@@ -164,6 +167,29 @@ function priorInvolvement(application, user, steps = []) {
       && s.outcome !== 'PENDING'
       && s.outcome !== 'RETURNED'
   );
+
+  if (exempt) {
+    // Only an exemption actually being used is worth recording. An administrator
+    // touching a file for the first time is ordinary work, not an override.
+    if (!captured && !earlier) return { ok: true };
+
+    return {
+      ok: true,
+      override: true,
+      priorStage: earlier?.stage ?? null,
+      overrideReason: captured
+        ? 'Captured this application and is also approving it'
+        : `Already acted at ${config(earlier.stage)?.label || earlier.stage}`,
+    };
+  }
+
+  if (captured) {
+    return {
+      ok: false,
+      reason: 'You captured this application, so you cannot also approve it.',
+    };
+  }
+
   if (earlier) {
     return {
       ok: false,
@@ -350,6 +376,7 @@ module.exports = {
   STAGES,
   STAGE_CONFIG,
   ROLE_STAGE,
+  EXEMPT_ROLES,
   OUTCOME_LABEL,
   OUTCOME_TONE,
   stageForRole,

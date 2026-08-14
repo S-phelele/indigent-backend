@@ -36,12 +36,33 @@ router.use(cache.invalidateOn(cache.TAGS.STAFF, cache.TAGS.USERS, cache.TAGS.ANA
 /** Roles this screen may create. ADMIN is not among them, on purpose. */
 const MANAGEABLE_ROLES = ['COUNCILLOR', 'CAPTURE_OFFICER', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];
 
+/**
+ * Roles only a superuser may hand out.
+ *
+ * Both can decide, and SUPERUSER can walk a case through every stage on its own,
+ * so neither should be assignable by an account that does not already hold that
+ * much power itself.
+ */
+const PRIVILEGED_ROLES = ['ADMIN', 'SUPERUSER'];
+
 const ROLE_LABELS = {
   COUNCILLOR: 'Ward Councillor',
   CAPTURE_OFFICER: 'Capture Officer',
   VERIFICATION_OFFICER: 'Verification Officer',
   ASSESSMENT_OFFICER: 'Assessment Officer',
   SUPERVISOR: 'Supervisor',
+  ADMIN: 'Administrator',
+  SUPERUSER: 'Super Administrator',
+};
+
+const ROLE_HINTS = {
+  COUNCILLOR: 'Captures applications door to door in a ward.',
+  CAPTURE_OFFICER: 'Captures walk-in applications at the front desk.',
+  VERIFICATION_OFFICER: 'Checks captured applications and recommends an outcome.',
+  ASSESSMENT_OFFICER: 'Applies the means test and confirms the budget.',
+  SUPERVISOR: 'Signs off approvals. Cannot approve without a drawn signature.',
+  ADMIN: 'Runs the register and makes the final decision.',
+  SUPERUSER: 'Does everything, including every stage of one case. Grant sparingly.',
 };
 
 const STAFF_FIELDS = {
@@ -111,6 +132,34 @@ async function issueCredentials(user, { purpose }) {
 
   return { temporaryPassword: plain, smsDelivered: delivery.ok, smsReason: delivery.reason };
 }
+
+/**
+ * The roles this administrator may assign, with their labels and hints.
+ *
+ * Served rather than hardcoded in the portal. The portal's own list had three
+ * entries where the enum has seven, and the two it omitted were
+ * ASSESSMENT_OFFICER and SUPERVISOR — the roles that own stages two and three of
+ * the approval chain. An administrator could not appoint anybody to half the
+ * workflow, and nothing on either side said so.
+ *
+ * Registered before `/:id` so "roles" is not read as a staff member's id.
+ */
+router.get('/roles', (req, res) => {
+  const assignable = [
+    ...MANAGEABLE_ROLES,
+    ...(req.user.role === 'SUPERUSER' ? PRIVILEGED_ROLES : []),
+  ];
+
+  res.json({
+    success: true,
+    data: assignable.map((value) => ({
+      value,
+      label: ROLE_LABELS[value] || value,
+      hint: ROLE_HINTS[value] || '',
+      privileged: PRIVILEGED_ROLES.includes(value),
+    })),
+  });
+});
 
 /** List councillors, with how much each has captured. */
 router.get('/', async (req, res) => {
