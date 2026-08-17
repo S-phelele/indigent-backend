@@ -333,6 +333,8 @@ router.post('/', async (req, res) => {
         ward: ward ? String(ward).trim() : null,
         idNumber: idNumber ? String(idNumber).trim() : null,
         isVerified: true,
+        // Staff identity is confirmed by the administrator creating the account.
+        cellVerifiedAt: new Date(),
         registeredById: req.user.id,
       },
       select: STAFF_FIELDS,

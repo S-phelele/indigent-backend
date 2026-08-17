@@ -18,9 +18,50 @@ const income = require('./income');
  * drifting.
  */
 
+/**
+ * How this application's cell verification reads.
+ *
+ * A draft reports the account's live state; a submitted application reports the
+ * copy frozen onto it. One shape, built once, so the administrator's screen, the
+ * approver's, the applicant's and the mobile app cannot describe the same fact
+ * four different ways — the same reason `describeTrail` was unified.
+ */
+function verificationOf(application, owner = null) {
+  const submitted = Boolean(application.submittedAt);
+
+  if (submitted) {
+    return {
+      verified: Boolean(application.cellVerified),
+      verifiedAt: application.cellVerifiedAt ?? null,
+      number: application.cellVerifiedNumber ?? null,
+      source: 'submitted',
+    };
+  }
+
+  return {
+    verified: Boolean(owner?.isVerified),
+    verifiedAt: owner?.cellVerifiedAt ?? null,
+    number: owner?.isVerified ? owner.cellNumber ?? null : null,
+    source: 'account',
+  };
+}
+
 /** Everything that must be true before an application can enter the queue. */
-function readiness(application) {
+function readiness(application, { owner = null } = {}) {
   const problems = [];
+
+  /**
+   * The number has to have been proved.
+   *
+   * Every decision reaches the household by SMS, so an unproved number produces
+   * an approval nobody is told about. Listed with the missing documents rather
+   * than on a separate error path, because from the applicant's side it is the
+   * same kind of thing: something still outstanding, named plainly.
+   */
+  const owning = owner ?? application.user ?? null;
+  if (!owning?.isVerified) {
+    problems.push('Your cell number has not been verified. Verify it from your profile before submitting.');
+  }
 
   const documents = slots.outstanding(application.documents || []);
   if (!documents.complete) {
@@ -89,12 +130,32 @@ function readiness(application) {
  * Assumes the caller has already checked permission and readiness.
  */
 async function submit(application, { actor, capturedBy = null } = {}) {
+  /**
+   * The account's verification, read here rather than trusted from the request.
+   *
+   * Both doors into this function — a resident submitting their own form and a
+   * councillor submitting one they captured — produce the same record, which is
+   * the whole reason this lives in one place.
+   */
+  const owner = await prisma.user.findUnique({
+    where: { id: application.userId },
+    select: { isVerified: true, cellVerifiedAt: true, cellNumber: true },
+  });
+
   const updated = await prisma.application.update({
     where: { id: application.id },
     data: {
       status: 'PENDING',
       submittedAt: new Date(),
       currentStep: 5,
+      /**
+       * Frozen from the account, alongside the income threshold below and for
+       * the same reason. Changing the number afterwards must not rewrite what
+       * an already-decided application says about the moment it was decided.
+       */
+      cellVerified: Boolean(owner?.isVerified),
+      cellVerifiedAt: owner?.cellVerifiedAt ?? null,
+      cellVerifiedNumber: owner?.isVerified ? owner.cellNumber : null,
       /**
        * Submitting puts the application at the front of the approval chain.
        *
@@ -181,4 +242,4 @@ async function submit(application, { actor, capturedBy = null } = {}) {
   return updated;
 }
 
-module.exports = { readiness, submit };
+module.exports = { readiness, submit, verificationOf };

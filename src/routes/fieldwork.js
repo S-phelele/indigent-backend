@@ -199,7 +199,11 @@ router.post('/households', async (req, res) => {
           idNumber: trimmedId,
           // Their identity was confirmed face to face against their ID book,
           // which is a stronger check than the SMS code the portal would send.
+          // Dated here as well, so submission has a real moment to freeze onto
+          // the application rather than a null that reads as "verified, when
+          // nobody knows".
           isVerified: true,
+          cellVerifiedAt: new Date(),
           mustChangePassword: true,
           registeredById: req.user.id,
         },
@@ -381,6 +385,8 @@ router.post('/applications/:id/submit', async (req, res) => {
         // as a resident's own form, so it has to load the same relations.
         incomeSources: { orderBy: { createdAt: 'asc' } },
         household: { orderBy: { createdAt: 'asc' } },
+        // readiness() also checks that the resident's number was verified.
+        user: { select: { id: true, isVerified: true, cellVerifiedAt: true, cellNumber: true } },
       },
     });
 

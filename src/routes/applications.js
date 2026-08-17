@@ -447,11 +447,19 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       }
     }
 
-    // Boolean
-    if (body.cellVerified !== undefined) {
-      const b = toBool(body.cellVerified);
-      if (b !== undefined) updateData.cellVerified = b;
-    }
+    /**
+     * cellVerified is not accepted from the client.
+     *
+     * It used to be, which meant any caller could PATCH `cellVerified: true`
+     * without a code ever being issued — and the verified badge an officer
+     * trusts on the review screen was showing a value the applicant had supplied
+     * about themselves. It is written by submission.js now, copied from the
+     * account, and nowhere else.
+     *
+     * A stale client sending it is ignored rather than refused: three clients
+     * are being migrated one at a time and a hard error would break the two that
+     * have not been updated yet.
+     */
 
     // Integers
     ['peopleOnProperty', 'childrenUnder18', 'adults', 'pensionersOver60'].forEach((key) => {
@@ -574,7 +582,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
  * lib/submission.js, shared with the councillor's field capture so both routes
  * produce an identical record.
  */
-router.post('/:id/submit', access.loadFor('submit', { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } }, household: { orderBy: { createdAt: 'asc' } } } }), async (req, res) => {
+router.post('/:id/submit', access.loadFor('submit', { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } }, household: { orderBy: { createdAt: 'asc' } }, user: { select: { id: true, isVerified: true, cellVerifiedAt: true, cellNumber: true } } } }), async (req, res) => {
   try {
     const application = req.application;
 

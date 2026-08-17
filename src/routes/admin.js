@@ -1231,9 +1231,13 @@ router.patch('/applications/:id', async (req, res) => {
       'employerName', 'employerAddress', 'workTelNumber', 'waterMeterNumber', 'electricityMeterNumber'];
     const ENUMS = { maritalStatus: MARITAL, employmentStatus: EMPLOYMENT };
     const INTS = ['peopleOnProperty', 'childrenUnder18', 'adults', 'pensionersOver60'];
-    const MONEY = ['salary', 'oldAgePension', 'disabilityPension', 'businessIncome', 'rentingIncome'];
+    // Income is rows now, saved through /applications/:id/income, and the
+    // totals are derived from them. cellVerified is written by submission.js
+    // from the account and is not editable by hand — an administrator ticking a
+    // box is not evidence that a code reached the household.
+    const MONEY = [];
     const BOOLS = ['ownsImmovableProperty', 'isFullTimeOccupant', 'incomeBelowThreshold',
-      'hasMunicipalArrears', 'hasArrearsArrangement', 'cellVerified'];
+      'hasMunicipalArrears', 'hasArrearsArrangement'];
 
     if (body.idNumber !== undefined && String(body.idNumber).trim()) {
       const check = saId.validate(body.idNumber);

@@ -253,6 +253,13 @@ model User {
   idNumber      String?  @unique
   isVerified    Boolean  @default(false)
 
+  /// When the number was proved by a code sent to it.
+  ///
+  /// `isVerified` says whether; this says when, which is the half an audit
+  /// needs. Cleared whenever the number changes, because a verification belongs
+  /// to a number rather than to an account.
+  cellVerifiedAt DateTime?
+
   /// Ward this councillor serves, e.g. "Ward 12". Councillors only.
   ward          String?
 
@@ -401,7 +408,26 @@ model Application {
   employerName          String?
   employerAddress       String?
   workTelNumber         String?
+  // --- Cell verification, frozen at submission ------------------------------
+  //
+  // The account holds the live truth; these three are copied from it when the
+  // application is submitted and never change afterwards.
+  //
+  // Deriving them from the account on every read would be simpler and wrong,
+  // for the same reason incomeThresholdApplied is frozen: an applicant who
+  // changes their number in 2027 would retroactively turn an application
+  // decided in 2026 into one that reads "not verified", and an auditor asking
+  // whether the number was confirmed when the money was approved would get an
+  // answer about today instead.
+  //
+  // Server-written only. This used to be accepted from the request body, so any
+  // client could assert `cellVerified: true` without a code ever being sent —
+  // and the badge an officer trusts was showing a value the applicant supplied
+  // about themselves.
   cellVerified          Boolean           @default(false)
+  cellVerifiedAt        DateTime?
+  /// The number as it was verified, so a later change cannot rewrite history.
+  cellVerifiedNumber    String?
 
   // --- Derived from the ID number -------------------------------------------
   //

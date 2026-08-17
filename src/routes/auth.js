@@ -60,22 +60,45 @@ router.post('/register', registerLimiter, async (req, res) => {
       });
     }
 
-    if (idNumber) {
-      const check = saId.validate(idNumber);
-      if (!check.valid) return res.status(400).json({ success: false, message: check.reason });
+    /**
+     * Both now required, where both used to be optional.
+     *
+     * The cell number is how every decision reaches the household — an account
+     * without one produces an application the municipality cannot answer. The
+     * ID number is what the whole register is keyed on: duplicate detection and
+     * reconciliation are impossible without it, and asking for it later means
+     * asking somebody to identify themselves after they have already been let in.
+     */
+    const cell = sms.normaliseNumber(cellNumber);
+    if (!cell) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please enter your cell number. We send every update about your application to it by SMS.',
+      });
     }
 
+    if (!idNumber) {
+      return res.status(400).json({ success: false, message: 'Please enter your 13-digit South African ID number.' });
+    }
+    const check = saId.validate(idNumber);
+    if (!check.valid) return res.status(400).json({ success: false, message: check.reason });
+
+    /**
+     * The cell number has to be unique as well.
+     *
+     * Codes are issued against a number, not an account, so two accounts sharing
+     * one number would make a verification ambiguous — there would be no way to
+     * say which of them a code had proved.
+     */
     const existing = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { email },
-          ...(idNumber ? [{ idNumber }] : []),
-        ],
-      },
+      where: { OR: [{ email }, { idNumber }, { cellNumber: cell }] },
     });
 
     if (existing) {
-      return res.status(400).json({ success: false, message: 'That email address or ID number is already registered. Try signing in instead.' });
+      return res.status(400).json({
+        success: false,
+        message: 'That email address, ID number or cell number is already registered. Try signing in instead.',
+      });
     }
 
     const hashed = await bcrypt.hash(password, 12);
@@ -86,11 +109,11 @@ router.post('/register', registerLimiter, async (req, res) => {
         password: hashed,
         firstName,
         lastName,
-        cellNumber,
+        cellNumber: cell,
         idNumber,
         role: 'APPLICANT',
       },
-      select: { id: true, email: true, role: true, firstName: true, lastName: true, cellNumber: true },
+      select: { id: true, email: true, role: true, firstName: true, lastName: true, cellNumber: true, idNumber: true, isVerified: true },
     });
 
     const token = generateToken(user.id);
@@ -115,23 +138,40 @@ router.post('/register', registerLimiter, async (req, res) => {
     await notify.toUser(user.id, {
       type: notify.TYPE.WELCOME,
       title: 'Welcome to the Indigent Register',
-      body: 'Start an application when you are ready. Your progress is saved as you go.',
-      link: '/dashboard',
+      body: 'Verify your cell number, then you can start an application. Your progress is saved as you go.',
+      link: '/verify',
     });
 
-    if (user.cellNumber) {
-      await sms.send(user.cellNumber, smsTemplates.build('WELCOME', { firstName: user.firstName }), {
-        purpose: 'WELCOME',
-        userId: user.id,
-        entityType: 'User',
-        entityId: user.id,
-      });
-    }
+    /**
+     * The code goes out with the account, not on a second request.
+     *
+     * The applicant lands on the verify screen with the SMS already on its way,
+     * which is one fewer thing to press at the moment they are most likely to
+     * give up. The welcome SMS deliberately does *not* go now: two messages
+     * arriving together, one of them containing a six-digit code, is how people
+     * type the wrong number into the box. It is sent once verification succeeds.
+     */
+    const { code } = await otpService.issue(cell, {
+      userId: user.id,
+      purpose: otpService.PURPOSE.VERIFY_CELL,
+    });
+
+    await sms.send(
+      cell,
+      smsTemplates.build('OTP', { code, minutes: otpService.EXPIRY_MINUTES }),
+      { purpose: 'OTP', userId: user.id, entityType: 'User', entityId: user.id, secrets: [code] }
+    );
 
     res.status(201).json({
       success: true,
-      message: 'Your account is ready.',
-      data: { user, token },
+      message: `Your account is ready. We sent a verification code to the number ending in ${cell.slice(-4)}.`,
+      data: {
+        user,
+        token,
+        /** The portals read this and send the holder straight to the verify screen. */
+        verificationRequired: true,
+      },
+      demoOtp: exposeDemoCode() ? code : undefined,
     });
   } catch (error) {
     console.error(error);
@@ -377,22 +417,51 @@ router.post('/verify-otp', otpVerifyLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message });
     }
 
-    // A signed-in applicant also has the number recorded against their account.
-    if (req.headers.authorization) {
-      try {
-        const token = req.headers.authorization.split(' ')[1];
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        await prisma.user.update({
-          where: { id: decoded.userId },
-          data: { isVerified: true, cellNumber },
-        });
-      } catch {
-        // An invalid token here only means the number is not attached to an
-        // account; the code itself was still valid.
-      }
+    /**
+     * Attach the verification to the account that asked for it.
+     *
+     * The token is read from the OTP row rather than from the request header.
+     * The header was parsed by hand here, which meant an unauthenticated caller
+     * with a valid code could verify a number against no account at all, and
+     * `cellVerifiedAt` was never recorded — so nothing could later say when.
+     *
+     * `result.otp.userId` is set when the code was issued to a known account,
+     * which registration and `send-otp` both do.
+     */
+    let verifiedUser = null;
+    if (result.otp?.userId) {
+      verifiedUser = await prisma.user.update({
+        where: { id: result.otp.userId },
+        data: {
+          isVerified: true,
+          cellVerifiedAt: new Date(),
+          cellNumber: sms.normaliseNumber(cellNumber) || cellNumber,
+        },
+        select: { id: true, email: true, role: true, firstName: true, lastName: true, cellNumber: true, idNumber: true, isVerified: true },
+      });
+
+      await audit.record(req, {
+        action: audit.ACTIONS.VERIFY_CELL,
+        entityType: 'User',
+        entityId: verifiedUser.id,
+        details: `Cell number ending ${String(cellNumber).slice(-4)} verified`,
+        actor: verifiedUser,
+      });
+
+      // Held back at registration so it could not be mistaken for the code.
+      await sms.send(verifiedUser.cellNumber, smsTemplates.build('WELCOME', { firstName: verifiedUser.firstName }), {
+        purpose: 'WELCOME',
+        userId: verifiedUser.id,
+        entityType: 'User',
+        entityId: verifiedUser.id,
+      });
     }
 
-    res.json({ success: true, message: 'Cell number verified' });
+    res.json({
+      success: true,
+      message: 'Cell number verified',
+      data: verifiedUser ? { user: verifiedUser } : undefined,
+    });
   } catch (error) {
     console.error('verify-otp error:', error);
     res.status(500).json({ success: false, message: 'Verification failed' });
@@ -527,8 +596,20 @@ router.patch('/me', authenticate, async (req, res) => {
       if (cell && cell.replace(/\D/g, '').length < 10) {
         return res.status(400).json({ success: false, message: 'Enter a valid cell number of at least 10 digits' });
       }
-      // Changing the number invalidates the previous verification.
-      if (cell !== (req.user.cellNumber || '')) data.isVerified = false;
+      /**
+       * Changing the number invalidates the previous verification.
+       *
+       * The date goes with it. A verification belongs to a number, not to an
+       * account, so leaving cellVerifiedAt behind would have the record claim a
+       * date on which a number that is no longer held was proved.
+       *
+       * Any application already submitted keeps its own frozen copy and is
+       * unaffected — that is what the snapshot is for.
+       */
+      if (cell !== (req.user.cellNumber || '')) {
+        data.isVerified = false;
+        data.cellVerifiedAt = null;
+      }
       data.cellNumber = cell || null;
     }
 

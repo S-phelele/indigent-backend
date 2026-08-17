@@ -8,6 +8,7 @@ const ACTIONS = {
   LOGIN: 'LOGIN',
   REGISTER: 'REGISTER',
   PASSWORD_RESET: 'PASSWORD_RESET',
+  VERIFY_CELL: 'VERIFY_CELL',
   PASSWORD_CHANGE: 'PASSWORD_CHANGE',
 
   /// Sign-in security. Separate actions so a burst of failures against one

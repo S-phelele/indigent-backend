@@ -191,14 +191,61 @@ const requirePasswordChanged = (req, res, next) => {
 };
 
 /**
+ * Block an applicant until their cell number has been proved.
+ *
+ * The municipality sends every update about an application by SMS, and a number
+ * nobody has confirmed means a decision that never reaches the household it is
+ * about. Verification used to sit at step 2 of the wizard and was skippable, so
+ * an application could reach an approval queue with an unproved number.
+ *
+ * The gate is on starting *and* submitting an application, not on having an
+ * account: somebody who mistyped their number keeps the account they just made
+ * and can correct it, rather than being locked out and starting again.
+ *
+ * Applicants only. Staff are verified by whoever created their account, and
+ * gating a verification officer on an SMS would be absurd.
+ *
+ * Applied globally in index.js rather than per route, for the same reason as
+ * the password gate: so no route can be missed.
+ */
+const ALLOWED_WHILE_UNVERIFIED = [
+  { method: 'POST', path: '/api/auth/send-otp' },
+  { method: 'POST', path: '/api/auth/verify-otp' },
+  { method: 'POST', path: '/api/auth/change-password' },
+  { method: 'POST', path: '/api/auth/logout' },
+  { method: 'GET', path: '/api/auth/me' },
+  // So a mistyped number can be corrected without being stranded behind a code
+  // that can never arrive.
+  { method: 'PATCH', path: '/api/auth/me' },
+];
+
+const requireCellVerified = (req, res, next) => {
+  if (req.user?.role !== 'APPLICANT') return next();
+  if (req.user.isVerified) return next();
+
+  const allowed = ALLOWED_WHILE_UNVERIFIED.some(
+    (r) => r.method === req.method && req.originalUrl.split('?')[0] === r.path
+  );
+  if (allowed) return next();
+
+  return res.status(403).json({
+    success: false,
+    code: 'CELL_VERIFICATION_REQUIRED',
+    message: 'Please verify your cell number before continuing. We sent you a code by SMS.',
+  });
+};
+
+/**
  * The standard guard for any authenticated router:
  *
  *   router.use(...protect);
  *
- * One import instead of two, so a new router cannot pick up authentication and
- * silently miss the password-change gate. Everything except /api/auth uses it.
+ * One import instead of three, so a new router cannot pick up authentication and
+ * silently miss the password-change or cell-verification gates. Everything
+ * except /api/auth uses it — and /api/auth is where the routes that let somebody
+ * *out* of those gates live, which is why it does not.
  */
-const protect = [authenticate, requirePasswordChanged];
+const protect = [authenticate, requirePasswordChanged, requireCellVerified];
 
 module.exports = {
   authenticate,
@@ -211,6 +258,7 @@ module.exports = {
   requireVerifier,
   requireApprover,
   requirePasswordChanged,
+  requireCellVerified,
   STAFF_ROLES,
   APPROVER_ROLES,
 };
