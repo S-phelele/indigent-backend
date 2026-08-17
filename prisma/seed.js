@@ -25,6 +25,8 @@ const PASSWORD = 'Demo@2026';
 const DOMAIN = '@demo.local';
 
 const ACCOUNTS = [
+  { email: `superuser${DOMAIN}`, role: 'SUPERUSER', firstName: 'Zanele', lastName: 'Khumalo',
+    does: 'Everything, including every stage of one case' },
   { email: `admin${DOMAIN}`, role: 'ADMIN', firstName: 'Ayanda', lastName: 'Mahlangu',
     does: 'Everything, including the final decision' },
   { email: `councillor${DOMAIN}`, role: 'COUNCILLOR', firstName: 'Bongani', lastName: 'Zulu', ward: 'Ward 7',
@@ -37,8 +39,13 @@ const ACCOUNTS = [
     does: 'Applies the means test against the threshold' },
   { email: `supervisor${DOMAIN}`, role: 'SUPERVISOR', firstName: 'Farai', lastName: 'Chikafu',
     does: 'Signs the application off' },
+  /**
+   * The applicant needs an ID number and a verified cell number, or they cannot
+   * get past the verification gate to start an application at all — which would
+   * make the whole walkthrough untestable from the first screen.
+   */
   { email: `applicant${DOMAIN}`, role: 'APPLICANT', firstName: 'Grace', lastName: 'Mthembu',
-    cellNumber: '+27821110001', does: 'Applies for support' },
+    cellNumber: '+27821110001', idNumber: '8503124800081', does: 'Applies for support' },
 ];
 
 async function seed() {
@@ -52,12 +59,23 @@ async function seed() {
         password,
         role: account.role,
         isActive: true,
+        /**
+         * Re-asserted on every seed, not only on create.
+         *
+         * An applicant whose number is unverified is refused every route by the
+         * cell-verification gate, so a re-seeded account that kept an old
+         * unverified state would look broken in a way nothing on screen
+         * explains. The date is set too: submission freezes it onto the
+         * application, and a null there reads as "verified, nobody knows when".
+         */
+        isVerified: true,
+        cellVerifiedAt: new Date(),
         // Cleared deliberately. The forced password change is right for a real
         // account created by somebody else, and would stop a developer at the
         // first screen.
         mustChangePassword: false,
       },
-      create: { ...fields, password, isVerified: true },
+      create: { ...fields, password, isVerified: true, cellVerifiedAt: new Date() },
     });
   }
 
