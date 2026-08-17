@@ -346,6 +346,16 @@ function describeTrail(steps = []) {
         signatureName: step.signatureName || null,
         signedAt: step.signedAt || null,
 
+        /**
+         * This step was taken by somebody who had already worked the case.
+         *
+         * Only ADMIN and SUPERUSER can reach it. Carried through to the trail
+         * because a case walked through by one pair of hands must not read like
+         * any other — the exemption is the only place that fact now lives.
+         */
+        isOverride: Boolean(step.isOverride),
+        overrideReason: step.overrideReason || null,
+
         sentence: describeStep(step),
       };
     });
