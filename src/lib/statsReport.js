@@ -44,6 +44,16 @@ function build({
   days = 30,
   generatedBy = null,
   municipality = process.env.MUNICIPALITY_NAME || null,
+  /**
+   * The criteria these numbers cover, printed at the top of the report.
+   *
+   * A statistic without its criteria is not a statistic: "1 204 households"
+   * means nothing if the reader cannot tell whether that is one ward or all of
+   * them, this quarter or since the register opened. Always present — an
+   * unfiltered report still says "all wards" rather than saying nothing and
+   * leaving the reader to assume.
+   */
+  filters = [],
 } = {}) {
   const approved = applications.filter((a) => a.status === 'APPROVED');
   const declined = applications.filter((a) => a.status === 'DECLINED');
@@ -402,6 +412,7 @@ function build({
     generatedBy,
     municipality,
     periodDays: days,
+    filters,
     headline: {
       applications: applications.length,
       approved: approved.length,
@@ -416,12 +427,31 @@ function build({
 }
 
 /** Turn the report into the sheet definitions the workbook writer wants. */
-const toSheets = (report) => report.sections.map((section) => ({
-  name: section.name,
-  title: section.title,
-  note: section.note,
-  columns: section.columns,
-  rows: section.rows,
-}));
+/**
+ * The workbook's sheets, with the criteria as the first one.
+ *
+ * A spreadsheet outlives the screen it was exported from and gets forwarded,
+ * renamed and pasted into a council pack. Without the filters travelling inside
+ * the file, a ward-level export is indistinguishable from a register-wide one
+ * the moment it leaves the browser — and somebody will read it as the whole
+ * municipality.
+ */
+const toSheets = (report) => [
+  {
+    name: 'Criteria',
+    title: 'What these figures cover',
+    note: `Generated ${new Date(report.generatedAt).toLocaleString('en-ZA')}`
+      + `${report.generatedBy ? ` by ${report.generatedBy}` : ''}.`,
+    columns: [{ key: 'label', label: 'Filter' }, { key: 'value', label: 'Applied' }],
+    rows: (report.filters || []).map((f) => ({ label: f.label, value: f.value })),
+  },
+  ...report.sections.map((section) => ({
+    name: section.name,
+    title: section.title,
+    note: section.note,
+    columns: section.columns,
+    rows: section.rows,
+  })),
+];
 
 module.exports = { build, toSheets };

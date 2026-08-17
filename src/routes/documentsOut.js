@@ -11,6 +11,7 @@ const sanitize = require('../lib/sanitize');
 const respond = require('../lib/respond');
 const access = require('../lib/applicationAccess');
 const statsReport = require('../lib/statsReport');
+const reportFilters = require('../lib/reportFilters');
 const spreadsheet = require('../lib/spreadsheet');
 
 /**
@@ -109,26 +110,19 @@ router.get('/applications/:id/print', respond.handler(async (req, res) => {
  * looking at rather than the whole register and then deletes rows.
  */
 router.get('/applications.csv', exportLimiter, respond.handler(async (req, res) => {
-  const status = sanitize.oneOf(req.query.status, ['DRAFT', 'PENDING', 'APPROVED', 'DECLINED']);
-  const stage = sanitize.oneOf(req.query.stage, chain.STAGES);
-  const ward = sanitize.text(req.query.ward, { max: 40 });
-  const renewalStatus = sanitize.oneOf(req.query.renewalStatus, ['ACTIVE', 'DUE_SOON', 'OVERDUE', 'LAPSED']);
-  const from = req.query.from ? new Date(req.query.from) : null;
-  const to = req.query.to ? new Date(req.query.to) : null;
-
+  /**
+   * The same filters the statistics report uses.
+   *
+   * This route had its own narrower set, so "ward 12, approved, this quarter"
+   * meant one thing on the report and another on the CSV — two answers to one
+   * question, which is the failure that makes an export worse than no export.
+   */
+  const filters = reportFilters.parse(req.query);
   const where = {
-    ...(status ? { status } : { status: { in: ['PENDING', 'APPROVED', 'DECLINED'] } }),
-    ...(stage ? { approvalStage: stage } : {}),
-    ...(ward ? { wardNumber: ward } : {}),
-    ...(renewalStatus ? { renewalStatus } : {}),
-    ...(from || to
-      ? {
-          submittedAt: {
-            ...(from && !Number.isNaN(from.valueOf()) ? { gte: from } : {}),
-            ...(to && !Number.isNaN(to.valueOf()) ? { lte: to } : {}),
-          },
-        }
-      : {}),
+    ...filters.where,
+    // Drafts are excluded unless asked for by name. A CSV of half-finished
+    // forms is noise in a report about applications the municipality has.
+    ...(filters.where.status ? {} : { status: { in: ['PENDING', 'APPROVED', 'DECLINED'] } }),
   };
 
   // Capped rather than unbounded: an export is a report, and a request that
@@ -196,7 +190,7 @@ router.get('/renewals.csv', exportLimiter, respond.handler(async (req, res) => {
  * a figure — which is the failure that makes an exported report worse than no
  * report at all.
  */
-async function gatherStats() {
+async function gatherStats(where = {}) {
   const APPLICATION_FIELDS = {
     id: true, status: true, createdAt: true, submittedAt: true, reviewedAt: true,
     peopleOnProperty: true, childrenUnder18: true, pensionersOver60: true,
@@ -208,10 +202,20 @@ async function gatherStats() {
     difficultyRemembering: true, difficultySelfCare: true, difficultyCommunicating: true,
   };
 
+  /**
+   * The funnel counts stay register-wide on purpose.
+   *
+   * "How many registered accounts started an application" is a question about
+   * the whole register; narrowing it to a ward would produce a percentage with
+   * a filtered numerator over an unfiltered denominator, which is worse than
+   * not showing it.
+   */
   const [applications, documents, councillors, totalUsers, usersWithApplication] = await Promise.all([
-    prisma.application.findMany({ select: APPLICATION_FIELDS }),
+    prisma.application.findMany({ where, select: APPLICATION_FIELDS }),
     prisma.document.findMany({
-      where: { application: { status: { in: ['DRAFT', 'PENDING'] } } },
+      // Scoped to the same set, so the document-bottleneck table describes the
+      // applications the rest of the report is about rather than the register.
+      where: { application: { ...where, status: { in: ['DRAFT', 'PENDING'] } } },
       select: { name: true, type: true, importance: true, requirementGroup: true, status: true },
     }),
     prisma.user.findMany({
@@ -225,10 +229,37 @@ async function gatherStats() {
   return { applications, documents, councillors, totalUsers, usersWithApplication };
 }
 
-const reportFor = async (req) => statsReport.build({
-  ...(await gatherStats()),
-  generatedBy: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,
-});
+const reportFor = async (req) => {
+  const filters = reportFilters.parse(req.query);
+  return statsReport.build({
+    ...(await gatherStats(filters.where)),
+    generatedBy: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,
+    // Printed at the top of the report. A statistic without its criteria is not
+    // a statistic — "1 204 households" means nothing if the reader cannot tell
+    // whether that is this ward or all of them.
+    filters: reportFilters.describe(filters),
+  });
+};
+
+/** The filter options a client renders, from the enums rather than hardcoded. */
+router.get('/report-options', respond.handler(async (req, res) => {
+  const wards = await prisma.application.findMany({
+    where: { wardNumber: { not: null } },
+    distinct: ['wardNumber'],
+    select: { wardNumber: true },
+    orderBy: { wardNumber: 'asc' },
+  });
+
+  res.json({
+    success: true,
+    data: {
+      ...reportFilters.options(),
+      // The wards that actually appear in the register, not a fixed list that
+      // goes stale when a municipality is re-demarcated.
+      wards: wards.map((w) => w.wardNumber).filter(Boolean),
+    },
+  });
+}, 'report options'));
 
 /**
  * The statistics as a real Excel workbook.
