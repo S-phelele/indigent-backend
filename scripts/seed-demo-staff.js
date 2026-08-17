@@ -10,4 +10,26 @@
  *     node scripts/seed-demo-staff.js            create or reset them
  *     node scripts/seed-demo-staff.js --remove   take them out again
  */
-require('../prisma/seed');
+/**
+ * Called, not merely required.
+ *
+ * `prisma/seed.js` guards its own entry point with `require.main === module` so
+ * that importing it does not seed as a side effect. Requiring it from here
+ * therefore ran nothing at all: `npm run demo:seed` printed no output, exited
+ * zero, and created no accounts — so the whole walkthrough failed at the sign-in
+ * screen with nothing to say why.
+ */
+const { seed, remove } = require('../prisma/seed');
+const prisma = require('../src/lib/prisma');
+
+(async () => {
+  try {
+    if (process.argv.includes('--remove')) await remove();
+    else await seed();
+  } catch (error) {
+    console.error('Seed failed:', error.message);
+    process.exitCode = 1;
+  } finally {
+    await prisma.$disconnect();
+  }
+})();
