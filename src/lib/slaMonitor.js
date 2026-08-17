@@ -1,5 +1,6 @@
 const prisma = require('./prisma');
 const notify = require('./notify');
+const names = require('./names');
 
 /**
  * Scheduled service-level check.
@@ -53,7 +54,7 @@ function shouldAnnounce(alreadyAnnounced, next) {
 
 function message(level, application, ageDays) {
   const ref = application.reference || application.id.slice(0, 8);
-  const name = [application.names, application.surname].filter(Boolean).join(' ') || 'An applicant';
+  const name = names.display(application) === 'Unnamed' ? 'An applicant' : names.display(application);
 
   if (level === LEVEL.BREACHED) {
     return {

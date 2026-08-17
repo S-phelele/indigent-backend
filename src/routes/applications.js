@@ -231,7 +231,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
 
     // String fields
     const stringKeys = [
-      'title', 'maritalStatus', 'surname', 'names', 'idNumber', 'cellNumber',
+      'title', 'maritalStatus', 'surname', 'fullName', 'names', 'idNumber', 'cellNumber',
       'residentialAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
       'wardNumber', 'municipalAccountNumber', 'eskomAccountNumber',

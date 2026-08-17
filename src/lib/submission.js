@@ -7,6 +7,7 @@ const sms = require('./sms');
 const smsTemplates = require('./smsTemplates');
 const slaMonitor = require('./slaMonitor');
 const income = require('./income');
+const names = require('./names');
 
 /**
  * Submitting an application.
@@ -179,7 +180,7 @@ async function submit(application, { actor, capturedBy = null } = {}) {
   });
 
   const ref = updated.reference || updated.id.slice(0, 8);
-  const applicantName = [updated.names, updated.surname].filter(Boolean).join(' ') || 'An applicant';
+  const applicantName = names.display(updated) === 'Unnamed' ? 'An applicant' : names.display(updated);
 
   await notify.toAdmins({
     type: capturedBy ? notify.TYPE.COUNCILLOR_CAPTURE : notify.TYPE.NEW_APPLICATION,

@@ -1,6 +1,7 @@
 const chain = require('./approvalChain');
 const functioning = require('./functioning');
 const renewal = require('./renewal');
+const names = require('./names');
 
 /**
  * Exports a person can actually read.
@@ -60,7 +61,8 @@ const yesNo = (value) => (value === true ? 'Yes' : value === false ? 'No' : '');
 const APPLICATION_COLUMNS = [
   ['Reference', (a) => a.reference || ''],
   ['Surname', (a) => a.surname || ''],
-  ['First names', (a) => a.names || ''],
+  ['Full name', (a) => a.fullName || a.names || ''],
+  ['Initials', (a) => names.initials(a.fullName || a.names)],
   ['ID number', (a) => (a.idNumber ? `="${a.idNumber}"` : '')],
   ['Cell number', (a) => (a.cellNumber ? `="${a.cellNumber}"` : '')],
   ['Date of birth', (a) => date(a.dateOfBirth)],
@@ -142,7 +144,7 @@ const filename = (prefix, extra = '') =>
  */
 function printableSections(application, { meansTest = null } = {}) {
   const a = application;
-  const full = [a.names, a.surname].filter(Boolean).join(' ') || 'Not stated';
+  const full = names.display(a) === 'Unnamed' ? 'Not stated' : names.display(a);
   const money2 = (v) => (v == null ? 'Not stated' : `R ${Number(v).toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`);
   const or = (v) => (v == null || v === '' ? 'Not stated' : v);
 

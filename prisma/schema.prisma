@@ -354,6 +354,23 @@ model Application {
   title                 String?
   maritalStatus         MaritalStatus?
   surname               String?
+
+  /// Every given name, as the applicant writes them.
+  ///
+  /// `names` held one field that people used inconsistently — sometimes a first
+  /// name, sometimes all of them, sometimes the whole name including the
+  /// surname. Somebody called Nomsa Thandiwe Sibongile has three given names and
+  /// a right to have them recorded, and a municipal letter addressed to the
+  /// wrong one is a small insult that is entirely avoidable.
+  ///
+  /// Initials are derived from this, never stored: two fields holding the same
+  /// fact is two fields that can disagree.
+  fullName              String?
+
+  /// Superseded by fullName, which is backfilled from it. Kept until that has
+  /// been confirmed against real data, then dropped by a later migration —
+  /// removing it in the same change that creates its replacement would leave no
+  /// way back.
   names                 String?
   idNumber              String?
   cellNumber            String?

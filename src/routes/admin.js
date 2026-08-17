@@ -1227,7 +1227,7 @@ router.patch('/applications/:id', async (req, res) => {
     const data = {};
     const changed = [];
 
-    const STRINGS = ['surname', 'names', 'idNumber', 'cellNumber', 'residentialAddress', 'postalAddress',
+    const STRINGS = ['surname', 'fullName', 'names', 'idNumber', 'cellNumber', 'residentialAddress', 'postalAddress',
       'employerName', 'employerAddress', 'workTelNumber', 'waterMeterNumber', 'electricityMeterNumber'];
     const ENUMS = { maritalStatus: MARITAL, employmentStatus: EMPLOYMENT };
     const INTS = ['peopleOnProperty', 'childrenUnder18', 'adults', 'pensionersOver60'];
