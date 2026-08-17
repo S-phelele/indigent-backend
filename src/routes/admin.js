@@ -818,6 +818,7 @@ router.get('/applications/:id', async (req, res) => {
          */
         approvalSteps: { orderBy: { sequence: 'asc' } },
         household: { orderBy: { createdAt: 'asc' } },
+        incomeSources: { orderBy: { createdAt: 'asc' } },
         siteVisits: { orderBy: { attempt: 'asc' } },
         checks: { orderBy: { checkedAt: 'desc' } },
         capturedBy: { select: { id: true, firstName: true, lastName: true, ward: true } },

@@ -374,7 +374,14 @@ router.post('/applications/:id/submit', async (req, res) => {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: {
+        documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] },
+        // readiness() checks the income answer and the household count against
+        // the declared headcount. A field capture is held to the same standard
+        // as a resident's own form, so it has to load the same relations.
+        incomeSources: { orderBy: { createdAt: 'asc' } },
+        household: { orderBy: { createdAt: 'asc' } },
+      },
     });
 
     if (!application) {

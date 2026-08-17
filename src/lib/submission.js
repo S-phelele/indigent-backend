@@ -6,6 +6,7 @@ const slots = require('./documentSlots');
 const sms = require('./sms');
 const smsTemplates = require('./smsTemplates');
 const slaMonitor = require('./slaMonitor');
+const income = require('./income');
 
 /**
  * Submitting an application.
@@ -32,6 +33,40 @@ function readiness(application) {
   if (!application.cellNumber) missingFields.push('cell number');
   if (missingFields.length) {
     problems.push(`Applicant particulars are incomplete: ${missingFields.join(', ')}.`);
+  }
+
+  /**
+   * The income question has to have been answered one way or the other.
+   *
+   * An empty list is not an answer — it is the state of a section nobody has
+   * reached. Declaring no income at all is an answer, and a common one here, so
+   * it counts. Without this distinction an application with no income
+   * information reaches an assessor who cannot tell whether the household said
+   * "nothing" or was never asked, and the means test returns INSUFFICIENT_DATA
+   * on a form that looked complete to the person who sent it.
+   */
+  if (!income.answered(application.incomeSources || [], { declaredNoIncome: application.declaredNoIncome })) {
+    problems.push('The income section has not been answered. Add where your income comes from, or state that the household has none.');
+  }
+
+  /**
+   * Everybody counted must be listed.
+   *
+   * `peopleOnProperty` is typed; the household roll is built. Nothing
+   * reconciled them, so an application could declare five occupants and name
+   * two — and income per person, which is half the means test, is computed
+   * from the number that was typed.
+   *
+   * The applicant is one of the people but is not a row, hence the +1.
+   */
+  const declared = application.peopleOnProperty;
+  const listed = (application.household || []).length + 1;
+  if (declared && listed !== declared) {
+    problems.push(
+      listed < declared
+        ? `You said ${declared} people live on the property but only ${listed} ${listed === 1 ? 'is' : 'are'} listed. Add the rest.`
+        : `You said ${declared} people live on the property but ${listed} are listed. Correct whichever is wrong.`
+    );
   }
 
   return {

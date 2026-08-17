@@ -475,13 +475,34 @@ model Application {
   otherPropertyDetails  String?
 
   // Step 3 - Household Income
+  // --- Superseded by IncomeSource -------------------------------------------
+  //
+  // Five columns could hold five kinds of income and no more, so a household
+  // with two grants or two lodgers had nowhere to put the second. They are no
+  // longer written by the form and nothing computes from them; the rows in
+  // IncomeSource are the record now.
+  //
+  // Kept, unwritten, until the backfill has been confirmed in production. A
+  // later migration drops them. Removing them in the same change that creates
+  // their replacement would leave no way back if the backfill were wrong.
   salary                Decimal?          @db.Decimal(12, 2)
   oldAgePension         Decimal?          @db.Decimal(12, 2)
   disabilityPension     Decimal?          @db.Decimal(12, 2)
   businessIncome        Decimal?          @db.Decimal(12, 2)
   rentingIncome         Decimal?          @db.Decimal(12, 2)
+
+  /// Both derived from the IncomeSource rows on every save. Stored rather than
+  /// computed on read so the means test, analytics and exports can filter and
+  /// sort on them without loading every row.
   totalIncomePerPerson  Decimal?          @db.Decimal(12, 2)
   totalHouseholdIncome  Decimal?          @db.Decimal(12, 2)
+
+  /// Set when the household states it has no income at all.
+  ///
+  /// Without it, "no rows because they declared nothing" and "no rows because
+  /// nobody asked" are the same record — and one of those qualifies while the
+  /// other is an incomplete form.
+  declaredNoIncome      Boolean           @default(false)
 
   // Step 4 - General Information
   ownsImmovableProperty Boolean?
@@ -627,6 +648,7 @@ model Application {
   capturedBy            User?             @relation("CapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
   documents             Document[]
   household             HouseholdMember[]
+  incomeSources         IncomeSource[]
   siteVisits            SiteVisit[]
   checks                VerificationCheck[]
   approvalSteps         ApprovalStep[]
@@ -682,6 +704,81 @@ model HouseholdMember {
   updatedAt     DateTime @updatedAt
 
   application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+/// Where a household's money actually comes from.
+///
+/// The form used to open with "are you employed?", which assumes the answer is
+/// a job and makes everything else an exception to it. Most households applying
+/// here are not employed: they hold a child grant, an old-age pension, a room
+/// let out, piece work. Asking about employment first gets a "no" and then has
+/// to claw the real answer back out through follow-up questions.
+///
+/// So the question is where income comes from, and this is the answer — one row
+/// per source. Five fixed columns on Application could hold five kinds and no
+/// more; a household with two grants, or a pension and a lodger, had nowhere to
+/// record the second.
+enum IncomeSourceType {
+  /// Employed by somebody else.
+  SALARY
+  /// Working for themselves without a registered business: vendors, domestic
+  /// work, piece jobs. The largest category in most indigent registers.
+  SELF_EMPLOYMENT
+  /// A business with a name, formal or informal.
+  BUSINESS
+  CHILD_GRANT
+  OLD_AGE_PENSION
+  DISABILITY_GRANT
+  FOSTER_CARE_GRANT
+  CARE_DEPENDENCY_GRANT
+  /// A private pension or provident fund, as distinct from the state old-age
+  /// grant. They are different amounts from different payers and an assessor
+  /// needs to tell them apart.
+  RETIREMENT_FUND
+  UIF
+  /// Rent from a room, a back room, or a second property.
+  RENTAL
+  MAINTENANCE
+  REMITTANCE
+  OTHER
+}
+
+model IncomeSource {
+  id             String           @id @default(uuid())
+  applicationId  String
+
+  type           IncomeSourceType
+  /// What this source brings in each month. Zero is a legitimate answer — a
+  /// business can have a bad month — so it is not a reason to drop the row.
+  monthlyAmount  Decimal          @db.Decimal(12, 2)
+
+  /// SALARY and SELF_EMPLOYMENT: what the work actually is. "Street vendor" or
+  /// "domestic worker" tells an assessor something a job title does not.
+  jobDescription String?
+  /// SALARY only: who pays them.
+  employerName   String?
+
+  /// BUSINESS only.
+  businessName   String?
+  businessType   String?
+  /// Registered with CIPC, or trading informally. Both are legitimate and
+  /// neither disqualifies; only one leaves a paper trail a check can find.
+  isRegistered   Boolean?
+
+  /// OTHER only, and required there: a fixed list would silently drop whatever
+  /// it failed to anticipate.
+  otherDetail    String?
+
+  /// Which household member this belongs to, where it is not the applicant's
+  /// own. Null means the applicant.
+  memberId       String?
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  application    Application      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 
   @@index([applicationId])
 }

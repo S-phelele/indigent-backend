@@ -19,6 +19,7 @@ const staffRoutes = require('./routes/staff');
 const fieldworkRoutes = require('./routes/fieldwork');
 const verificationRoutes = require('./routes/verification');
 const householdRoutes = require('./routes/household');
+const incomeRoutes = require('./routes/income');
 const approvalRoutes = require('./routes/approvals');
 const renewalRoutes = require('./routes/renewals');
 const exportRoutes = require('./routes/documentsOut');
@@ -183,9 +184,10 @@ app.use(globalLimiter);
 
 // --- Routes -----------------------------------------------------------------
 app.use('/api/auth', authRoutes);
-// Mounted before the general applications router so /:id/household resolves
-// here rather than falling into the wizard's /:id handler.
+// Mounted before the general applications router so /:id/household and
+// /:id/income resolve here rather than falling into the wizard's /:id handler.
 app.use('/api/applications', householdRoutes);
+app.use('/api/applications', incomeRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/approvals', approvalRoutes);

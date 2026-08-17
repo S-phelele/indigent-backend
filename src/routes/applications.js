@@ -56,7 +56,7 @@ router.post('/', requireApplicant, async (req, res) => {
         userId: req.user.id,
         status: 'DRAFT',
       },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
     });
 
     if (existingDraft) {
@@ -77,14 +77,14 @@ router.post('/', requireApplicant, async (req, res) => {
         idNumber: req.user.idNumber || null,
         cellNumber: req.user.cellNumber || null,
       },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
     });
 
     await prisma.document.createMany({ data: slots.seedRows(application.id) });
 
     const full = await prisma.application.findUnique({
       where: { id: application.id },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
     });
 
     res.status(201).json({ success: true, data: full });
@@ -102,7 +102,7 @@ router.get('/mine', requireApplicant, async (req, res) => {
   try {
     const applications = await prisma.application.findMany({
       where: { userId: req.user.id },
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -120,6 +120,7 @@ router.get('/:id', async (req, res) => {
       where: { id: req.params.id },
       include: {
         documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] },
+        incomeSources: { orderBy: { createdAt: 'asc' } },
         user: {
           select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true, idNumber: true },
         },
@@ -460,14 +461,20 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       }
     });
 
-    // Decimals
-    ['salary', 'oldAgePension', 'disabilityPension', 'businessIncome', 'rentingIncome',
-      'totalIncomePerPerson', 'totalHouseholdIncome'].forEach((key) => {
-      if (body[key] !== undefined) {
-        const n = toDecimal(body[key]);
-        if (n !== undefined) updateData[key] = n;
-      }
-    });
+    /**
+     * Income is no longer written here.
+     *
+     * `salary`, `oldAgePension`, `disabilityPension`, `businessIncome` and
+     * `rentingIncome` are superseded by the IncomeSource rows, and the two
+     * totals are derived from those rows in routes/income.js. Accepting them
+     * from this route as well would give the form two ways to state the same
+     * figure and no rule about which wins.
+     *
+     * The columns still exist until the drop migration, so a client that has
+     * not been updated sends values that are quietly ignored rather than
+     * causing an error — which is the right failure while three clients are
+     * being migrated one at a time.
+     */
 
     // Yes/No booleans
     ['ownsImmovableProperty', 'isFullTimeOccupant', 'incomeBelowThreshold',
@@ -486,33 +493,26 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       }
     }
 
-    // Auto-calculate totals when any income field is present
-    const incomeKeys = ['salary', 'oldAgePension', 'disabilityPension', 'businessIncome', 'rentingIncome'];
-    const hasIncomeUpdate = incomeKeys.some((k) => body[k] !== undefined);
-
-    if (hasIncomeUpdate) {
-      const s = toDecimal(body.salary) ?? (application.salary != null ? Number(application.salary) : 0);
-      const o = toDecimal(body.oldAgePension) ?? (application.oldAgePension != null ? Number(application.oldAgePension) : 0);
-      const d = toDecimal(body.disabilityPension) ?? (application.disabilityPension != null ? Number(application.disabilityPension) : 0);
-      const b = toDecimal(body.businessIncome) ?? (application.businessIncome != null ? Number(application.businessIncome) : 0);
-      const r = toDecimal(body.rentingIncome) ?? (application.rentingIncome != null ? Number(application.rentingIncome) : 0);
-
-      updateData.totalHouseholdIncome = s + o + d + b + r;
-
-      const people =
-        toInt(body.peopleOnProperty) ??
-        application.peopleOnProperty ??
-        1;
-      if (people > 0) {
-        updateData.totalIncomePerPerson = updateData.totalHouseholdIncome / people;
-      }
+    /**
+     * The headcount changed, so income per person changed with it.
+     *
+     * The total itself comes from the IncomeSource rows and is not touched
+     * here — only the division by the number of people, which this route does
+     * own. Recomputed rather than left stale, because a household that grows
+     * from two to six without the per-person figure moving would be assessed
+     * against a number that was never true.
+     */
+    if (updateData.peopleOnProperty !== undefined && application.totalHouseholdIncome != null) {
+      const people = Math.max(1, updateData.peopleOnProperty || 1);
+      updateData.totalIncomePerPerson =
+        Math.round((Number(application.totalHouseholdIncome) / people) * 100) / 100;
     }
 
     if (Object.keys(updateData).length === 0) {
       // Nothing to update — still return current record so UI can advance
       const current = await prisma.application.findUnique({
         where: { id: req.params.id },
-        include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+        include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
       });
       return res.json({ success: true, data: current });
     }
@@ -520,7 +520,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
     const updated = await prisma.application.update({
       where: { id: req.params.id },
       data: updateData,
-      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+      include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
     });
 
     /**
@@ -551,7 +551,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
 
         const refreshed = await prisma.application.findUnique({
           where: { id: updated.id },
-          include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } },
+          include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } } },
         });
         return res.json({ success: true, data: refreshed, checklistChanged: true });
       }
@@ -574,7 +574,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
  * lib/submission.js, shared with the councillor's field capture so both routes
  * produce an identical record.
  */
-router.post('/:id/submit', access.loadFor('submit', { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] } } }), async (req, res) => {
+router.post('/:id/submit', access.loadFor('submit', { include: { documents: { orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }] }, incomeSources: { orderBy: { createdAt: 'asc' } }, household: { orderBy: { createdAt: 'asc' } } } }), async (req, res) => {
   try {
     const application = req.application;
 

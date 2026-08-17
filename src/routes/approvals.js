@@ -35,6 +35,7 @@ const actorName = (u) => [u.firstName, u.lastName].filter(Boolean).join(' ') || 
 
 const FULL_INCLUDE = {
   household: { orderBy: { createdAt: 'asc' } },
+  incomeSources: { orderBy: { createdAt: 'asc' } },
   siteVisits: { orderBy: { attempt: 'asc' } },
   checks: { orderBy: { checkedAt: 'desc' } },
   approvalSteps: { orderBy: { sequence: 'asc' } },
