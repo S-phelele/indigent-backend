@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # No Postgres service here on purpose: every test under tests/ imports a
+    # lib/*.js module directly and exercises pure functions (means test,
+    # eligibility, income, SA ID parsing, ...). None of them touch prisma at
+    # runtime. DATABASE_URL below is only so `prisma generate` has something
+    # syntactically valid to read — it never has to connect.
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-only-placeholder-not-a-real-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx prisma generate
+
+      - run: npm test
