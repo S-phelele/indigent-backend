@@ -321,13 +321,18 @@ router.get('/export/applicants', exportLimiter, async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/stats/applications', async (req, res) => {
   try {
+    // Scoped to one ward when asked, e.g. a councillor's own patch — otherwise
+    // every figure on this page silently covered the whole register.
+    const ward = String(req.query.ward ?? '').trim();
+    const wardWhere = ward && ward.toLowerCase() !== 'all' ? { wardNumber: ward } : {};
+
     const [total, draft, pending, approved, declined, byEmploymentRaw] = await Promise.all([
-      prisma.application.count(),
-      prisma.application.count({ where: { status: 'DRAFT' } }),
-      prisma.application.count({ where: { status: 'PENDING' } }),
-      prisma.application.count({ where: { status: 'APPROVED' } }),
-      prisma.application.count({ where: { status: 'DECLINED' } }),
-      prisma.application.groupBy({ by: ['employmentStatus'], _count: { _all: true } }),
+      prisma.application.count({ where: wardWhere }),
+      prisma.application.count({ where: { ...wardWhere, status: 'DRAFT' } }),
+      prisma.application.count({ where: { ...wardWhere, status: 'PENDING' } }),
+      prisma.application.count({ where: { ...wardWhere, status: 'APPROVED' } }),
+      prisma.application.count({ where: { ...wardWhere, status: 'DECLINED' } }),
+      prisma.application.groupBy({ by: ['employmentStatus'], where: wardWhere, _count: { _all: true } }),
     ]);
 
     const decisions = approved + declined;
@@ -340,11 +345,11 @@ router.get('/stats/applications', async (req, res) => {
     const since = startOfDayUtc(29);
     const [created, submitted] = await Promise.all([
       prisma.application.findMany({
-        where: { createdAt: { gte: since } },
+        where: { ...wardWhere, createdAt: { gte: since } },
         select: { createdAt: true },
       }),
       prisma.application.findMany({
-        where: { submittedAt: { gte: since } },
+        where: { ...wardWhere, submittedAt: { gte: since } },
         select: { submittedAt: true },
       }),
     ]);
@@ -356,7 +361,7 @@ router.get('/stats/applications', async (req, res) => {
 
     res.json({
       success: true,
-      data: { total, draft, pending, approved, declined, approvalRate, byEmployment, dailyActivity },
+      data: { total, draft, pending, approved, declined, approvalRate, byEmployment, dailyActivity, ward: ward || null },
     });
   } catch (error) {
     console.error('admin/stats/applications error:', error);
@@ -366,7 +371,11 @@ router.get('/stats/applications', async (req, res) => {
 
 router.get('/export/applications', exportLimiter, async (req, res) => {
   try {
+    const ward = String(req.query.ward ?? '').trim();
+    const wardWhere = ward && ward.toLowerCase() !== 'all' ? { wardNumber: ward } : {};
+
     const apps = await prisma.application.findMany({
+      where: wardWhere,
       include: { user: { select: { email: true } } },
       orderBy: { createdAt: 'desc' },
       take: EXPORT_LIMIT,
@@ -375,7 +384,7 @@ router.get('/export/applications', exportLimiter, async (req, res) => {
     await audit.record(req, {
       action: audit.ACTIONS.EXPORT_APPLICATIONS,
       entityType: 'Application',
-      details: `Exported ${apps.length} application record(s)`,
+      details: `Exported ${apps.length} application record(s)${ward ? ` — Ward ${ward}` : ''}`,
     });
 
     res.json({
