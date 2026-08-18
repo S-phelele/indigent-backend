@@ -13,6 +13,7 @@ const sanitize = require('../lib/sanitize');
 const notify = require('../lib/notify');
 const sms = require('../lib/sms');
 const smsTemplates = require('../lib/smsTemplates');
+const names = require('../lib/names');
 const respond = require('../lib/respond');
 
 /**
@@ -137,7 +138,7 @@ router.get('/queue', respond.handler(async (req, res) => {
       const prior = chain.priorInvolvement(a, req.user, approvalSteps);
       return {
         ...a,
-        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: names.display(a),
         waitingDays: a.submittedAt ? Math.floor((now - new Date(a.submittedAt)) / 86400000) : null,
         // Said up front so somebody does not open a file only to be refused.
         canAct: prior.ok,

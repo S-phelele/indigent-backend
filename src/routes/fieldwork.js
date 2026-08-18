@@ -13,6 +13,7 @@ const notify = require('../lib/notify');
 const eligibility = require('../lib/eligibility');
 const cache = require('../lib/cache');
 const { staffLimiter } = require('../lib/rateLimit');
+const names = require('../lib/names');
 
 /**
  * Door-to-door capture.
@@ -479,7 +480,7 @@ router.get('/captures', async (req, res) => {
       success: true,
       data: captures.map(({ documents, ...a }) => ({
         ...a,
-        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: names.display(a),
         documentProgress: slots.progress(documents),
         outstanding: slots.outstandingMessage(documents),
       })),
@@ -530,7 +531,7 @@ router.get('/summary', async (req, res) => {
         // visited but never submitted helps nobody.
         unfinished: drafts.map((d) => ({
           ...d,
-          name: [d.fullName || d.names, d.surname].filter(Boolean).join(' ') || 'Unnamed',
+          name: names.display(d),
         })),
       },
     });

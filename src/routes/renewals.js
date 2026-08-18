@@ -10,6 +10,7 @@ const respond = require('../lib/respond');
 const notify = require('../lib/notify');
 const sms = require('../lib/sms');
 const smsTemplates = require('../lib/smsTemplates');
+const names = require('../lib/names');
 
 /**
  * Annual re-verification.
@@ -69,7 +70,7 @@ router.get('/', respond.handler(async (req, res) => {
     success: true,
     data: rows.map((a) => ({
       ...a,
-      name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+      name: names.display(a),
       daysRemaining: renewal.daysRemaining(a),
       // Computed live rather than read from the column, so the list is right
       // even between sweeps.

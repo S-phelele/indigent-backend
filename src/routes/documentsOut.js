@@ -13,6 +13,7 @@ const access = require('../lib/applicationAccess');
 const statsReport = require('../lib/statsReport');
 const reportFilters = require('../lib/reportFilters');
 const spreadsheet = require('../lib/spreadsheet');
+const names = require('../lib/names');
 
 /**
  * What comes out of the register: the printable form and the spreadsheet.
@@ -69,7 +70,7 @@ router.get('/applications/:id/print', respond.handler(async (req, res) => {
     success: true,
     data: {
       reference: application.reference,
-      applicantName: [application.fullName || application.names, application.surname].filter(Boolean).join(' ') || 'Not stated',
+      applicantName: names.display(application),
       status: application.status,
       printedAt: new Date(),
       printedBy: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,

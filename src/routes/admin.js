@@ -19,6 +19,7 @@ const meansTest = require('../lib/meansTest');
 const { passwordProblems, temporaryPassword } = require('../lib/credentials');
 const cache = require('../lib/cache');
 const { staffLimiter, exportLimiter } = require('../lib/rateLimit');
+const names = require('../lib/names');
 
 const router = express.Router();
 
@@ -136,7 +137,7 @@ router.get('/applications', async (req, res) => {
       reference: app.reference,
       // Fall back to the uuid stub for applications submitted before references existed.
       displayId: app.reference || app.id.slice(0, 8),
-      fullName: fullName(app.fullName || app.names, app.surname),
+      fullName: names.display(app),
       // Lets the queue mark rows a reviewer should look at more carefully.
       eligibility: eligibility.assess(app),
       cellNumber: app.cellNumber || 'N/A',
@@ -391,7 +392,7 @@ router.get('/export/applications', exportLimiter, async (req, res) => {
       success: true,
       data: apps.map((a) => ({
         Reference: a.id.slice(0, 8),
-        'Full Name': fullName(a.fullName || a.names, a.surname),
+        'Full Name': names.display(a),
         Email: a.user?.email || '',
         'ID Number': a.idNumber || '',
         'Cell Number': a.cellNumber || '',
@@ -712,7 +713,7 @@ router.get('/sla', async (req, res) => {
         id: a.id,
         reference: a.reference,
         displayId: a.reference || a.id.slice(0, 8),
-        fullName: fullName(a.fullName || a.names, a.surname),
+        fullName: names.display(a),
         email: a.user?.email || '—',
         submittedDate: a.submittedAt ? zaDate(a.submittedAt) : '—',
         ageDays,
@@ -842,7 +843,7 @@ router.get('/applications/:id', async (req, res) => {
       action: audit.ACTIONS.VIEW_APPLICATION,
       entityType: 'Application',
       entityId: application.id,
-      details: `Viewed ${application.reference || application.id.slice(0, 8)} — ${fullName(application.fullName || application.names, application.surname)}`,
+      details: `Viewed ${application.reference || application.id.slice(0, 8)} — ${names.display(application)}`,
     });
 
     res.json({

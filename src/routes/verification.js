@@ -9,6 +9,7 @@ const smsTemplates = require('../lib/smsTemplates');
 const geocode = require('../lib/geocode');
 const cache = require('../lib/cache');
 const { staffLimiter } = require('../lib/rateLimit');
+const names = require('../lib/names');
 
 /**
  * The verification stage.
@@ -101,7 +102,7 @@ router.get('/queue', async (req, res) => {
       success: true,
       data: rows.map(({ _count, ...a }) => ({
         ...a,
-        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: names.display(a),
         waitingDays: a.submittedAt ? Math.floor((now - new Date(a.submittedAt)) / 86400000) : null,
         visits: _count.siteVisits,
         checks: _count.checks,
