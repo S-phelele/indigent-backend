@@ -79,7 +79,7 @@ async function sweep(client, now) {
   const pending = await client.application.findMany({
     where: { status: 'PENDING', submittedAt: { not: null } },
     select: {
-      id: true, reference: true, names: true, surname: true,
+      id: true, reference: true, names: true, fullName: true, surname: true,
       submittedAt: true, slaNotifiedLevel: true,
     },
   });

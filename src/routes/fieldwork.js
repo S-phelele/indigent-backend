@@ -216,7 +216,13 @@ router.post('/households', async (req, res) => {
           status: 'DRAFT',
           currentStep: 1,
           surname: created.lastName,
+          // `names` is the legacy column, kept for a client not yet migrated.
+          // `fullName` is what every current screen displays, so a household
+          // captured at the door shows their name on the dashboard immediately
+          // rather than blank until the councillor reaches the particulars step —
+          // the same placeholder the councillor themselves typed seconds ago.
           names: created.firstName,
+          fullName: created.firstName,
           idNumber: created.idNumber,
           cellNumber: created.cellNumber,
           captureChannel: by.channel,
@@ -333,6 +339,7 @@ router.post('/residents/:id/applications', async (req, res) => {
         currentStep: 1,
         surname: resident.lastName,
         names: resident.firstName,
+        fullName: resident.firstName,
         idNumber: resident.idNumber,
         cellNumber: resident.cellNumber,
         captureChannel: by.channel,
@@ -459,7 +466,7 @@ router.get('/captures', async (req, res) => {
           : {}),
       },
       select: {
-        id: true, reference: true, status: true, names: true, surname: true, idNumber: true,
+        id: true, reference: true, status: true, names: true, fullName: true, surname: true, idNumber: true,
         cellNumber: true, residentialAddress: true, capturedAt: true, submittedAt: true,
         reviewedAt: true, capturedWard: true, currentStep: true,
         documents: { select: { id: true, name: true, importance: true, requirementGroup: true, status: true } },
@@ -472,7 +479,7 @@ router.get('/captures', async (req, res) => {
       success: true,
       data: captures.map(({ documents, ...a }) => ({
         ...a,
-        name: [a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
         documentProgress: slots.progress(documents),
         outstanding: slots.outstandingMessage(documents),
       })),
@@ -501,7 +508,7 @@ router.get('/summary', async (req, res) => {
       }),
       prisma.application.findMany({
         where: { capturedById: req.user.id, status: 'DRAFT' },
-        select: { id: true, names: true, surname: true, capturedAt: true, currentStep: true },
+        select: { id: true, names: true, fullName: true, surname: true, capturedAt: true, currentStep: true },
         orderBy: { capturedAt: 'desc' },
         take: 5,
       }),
@@ -523,7 +530,7 @@ router.get('/summary', async (req, res) => {
         // visited but never submitted helps nobody.
         unfinished: drafts.map((d) => ({
           ...d,
-          name: [d.names, d.surname].filter(Boolean).join(' ') || 'Unnamed',
+          name: [d.fullName || d.names, d.surname].filter(Boolean).join(' ') || 'Unnamed',
         })),
       },
     });

@@ -48,7 +48,7 @@ router.get('/', respond.handler(async (req, res) => {
     prisma.application.findMany({
       where,
       select: {
-        id: true, reference: true, names: true, surname: true, idNumber: true,
+        id: true, reference: true, names: true, fullName: true, surname: true, idNumber: true,
         cellNumber: true, wardNumber: true, approvedAt: true, expiresAt: true,
         renewalStatus: true, renewalCount: true, lastRenewedAt: true,
         totalHouseholdIncome: true, peopleOnProperty: true,
@@ -69,7 +69,7 @@ router.get('/', respond.handler(async (req, res) => {
     success: true,
     data: rows.map((a) => ({
       ...a,
-      name: [a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+      name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
       daysRemaining: renewal.daysRemaining(a),
       // Computed live rather than read from the column, so the list is right
       // even between sweeps.

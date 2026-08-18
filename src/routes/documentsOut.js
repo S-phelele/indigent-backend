@@ -69,7 +69,7 @@ router.get('/applications/:id/print', respond.handler(async (req, res) => {
     success: true,
     data: {
       reference: application.reference,
-      applicantName: [application.names, application.surname].filter(Boolean).join(' ') || 'Not stated',
+      applicantName: [application.fullName || application.names, application.surname].filter(Boolean).join(' ') || 'Not stated',
       status: application.status,
       printedAt: new Date(),
       printedBy: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,

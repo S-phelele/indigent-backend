@@ -112,7 +112,7 @@ router.get('/queue', respond.handler(async (req, res) => {
     prisma.application.findMany({
       where,
       select: {
-        id: true, reference: true, names: true, surname: true, idNumber: true,
+        id: true, reference: true, names: true, fullName: true, surname: true, idNumber: true,
         submittedAt: true, approvalStage: true, wardNumber: true, applicantCategory: true,
         totalHouseholdIncome: true, peopleOnProperty: true, capturedById: true,
         meansTestResult: true, recommendation: true,
@@ -137,7 +137,7 @@ router.get('/queue', respond.handler(async (req, res) => {
       const prior = chain.priorInvolvement(a, req.user, approvalSteps);
       return {
         ...a,
-        name: [a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
         waitingDays: a.submittedAt ? Math.floor((now - new Date(a.submittedAt)) / 86400000) : null,
         // Said up front so somebody does not open a file only to be refused.
         canAct: prior.ok,

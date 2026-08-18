@@ -77,7 +77,7 @@ router.get('/queue', async (req, res) => {
         // pulling whole applications with their documents made this the slowest
         // page in the portal for no benefit.
         select: {
-          id: true, reference: true, names: true, surname: true, idNumber: true,
+          id: true, reference: true, names: true, fullName: true, surname: true, idNumber: true,
           submittedAt: true, verificationStage: true, failedVisitCount: true,
           recommendation: true, wardNumber: true, applicantCategory: true,
           consentSiteVisit: true, consentDataMatching: true, declarationTruthful: true,
@@ -101,7 +101,7 @@ router.get('/queue', async (req, res) => {
       success: true,
       data: rows.map(({ _count, ...a }) => ({
         ...a,
-        name: [a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
+        name: [a.fullName || a.names, a.surname].filter(Boolean).join(' ') || 'Unnamed',
         waitingDays: a.submittedAt ? Math.floor((now - new Date(a.submittedAt)) / 86400000) : null,
         visits: _count.siteVisits,
         checks: _count.checks,

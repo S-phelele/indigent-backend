@@ -244,7 +244,7 @@ router.get('/:id', async (req, res) => {
       prisma.application.findMany({
         where: { capturedById: councillor.id },
         select: {
-          id: true, reference: true, status: true, names: true, surname: true,
+          id: true, reference: true, status: true, names: true, fullName: true, surname: true,
           capturedAt: true, submittedAt: true, capturedWard: true,
         },
         orderBy: { capturedAt: 'desc' },
