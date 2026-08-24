@@ -140,11 +140,11 @@ router.get('/applications.csv', exportLimiter, respond.handler(async (req, res) 
     action: audit.ACTIONS.EXPORT_APPLICATIONS,
     entityType: 'Application',
     details: `Exported ${applications.length} application(s)`
-      + `${status ? ` with status ${status}` : ''}${ward ? ` in ${ward}` : ''}`,
+      + `${filters.where.status ? ` with status ${filters.where.status}` : ''}${filters.where.wardNumber ? ` in ${filters.where.wardNumber}` : ''}`,
   });
 
   const csv = exportFormat.applicationsCsv(applications);
-  const name = exportFormat.filename('indigent-applications', [status, ward].filter(Boolean).join('-').toLowerCase());
+  const name = exportFormat.filename('indigent-applications', [filters.where.status, filters.where.wardNumber].filter(Boolean).join('-').toLowerCase());
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
