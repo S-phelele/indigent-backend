@@ -220,6 +220,14 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       if (!check.valid) return res.status(400).json({ success: false, message: check.reason });
     }
 
+    // The property owner's ID, like a household member's, is welcomed but never
+    // demanded — a tenant frequently knows their landlord's name and not their
+    // ID number. Checked for a plausible format only when one is given.
+    if (body.ownerIdNumber !== undefined && clean(body.ownerIdNumber) !== undefined) {
+      const check = saId.validate(body.ownerIdNumber);
+      if (!check.valid) return res.status(400).json({ success: false, message: `Property owner's ID number: ${check.reason}` });
+    }
+
     // Meter numbers are length-checked only; see lib/meterNumber for why.
     const meterChecks = {};
     for (const [key, kind] of [['waterMeterNumber', 'water'], ['electricityMeterNumber', 'electricity']]) {
@@ -235,7 +243,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       'residentialAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
       'wardNumber', 'municipalAccountNumber', 'eskomAccountNumber',
-      'otherPropertyDetails', 'incomeExclusions',
+      'otherPropertyDetails', 'incomeExclusions', 'ownerFullName', 'ownerIdNumber',
     ];
     stringKeys.forEach((key) => {
       if (body[key] !== undefined) {

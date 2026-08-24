@@ -121,6 +121,32 @@ test('the owner can be passed in rather than nested on the application', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Property owner, when the applicant is not the owner
+// ---------------------------------------------------------------------------
+
+test('a tenant cannot submit without naming the property owner', () => {
+  const check = submission.readiness(ready({ tenure: 'TENANT', ownerFullName: null }));
+  assert.equal(check.ready, false);
+  assert.ok(check.problems.some((p) => /property owner/i.test(p)));
+});
+
+test('an occupier cannot submit without naming the property owner either', () => {
+  const check = submission.readiness(ready({ tenure: 'OCCUPIER', ownerFullName: null }));
+  assert.equal(check.ready, false);
+  assert.ok(check.problems.some((p) => /property owner/i.test(p)));
+});
+
+test('naming the owner clears the problem', () => {
+  const check = submission.readiness(ready({ tenure: 'TENANT', ownerFullName: 'Nomvula Khumalo' }));
+  assert.ok(!check.problems.some((p) => /property owner/i.test(p)));
+});
+
+test('an owner-occupied application never needs an owner name', () => {
+  const check = submission.readiness(ready({ tenure: 'OWNER', ownerFullName: null }));
+  assert.ok(!check.problems.some((p) => /property owner/i.test(p)));
+});
+
+// ---------------------------------------------------------------------------
 // The snapshot — why it is frozen rather than derived
 // ---------------------------------------------------------------------------
 

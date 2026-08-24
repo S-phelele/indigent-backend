@@ -511,6 +511,15 @@ model Application {
   /// a tenant would be paying the wrong person.
   tenure                Tenure?
 
+  /// Who actually owns the property, when the applicant does not.
+  ///
+  /// Required once `tenure` is TENANT or OCCUPIER — a verification officer
+  /// checking the lease or the deed needs a name to check it against. The ID
+  /// number is welcomed but not demanded, the same leniency as a household
+  /// member's: a tenant often knows their landlord's name and not their ID.
+  ownerFullName         String?
+  ownerIdNumber         String?
+
   /// Any other property held anywhere in the country. Declaring one is not
   /// automatically disqualifying — an inherited plot with no services is not
   /// wealth — but it must be declared and seen.

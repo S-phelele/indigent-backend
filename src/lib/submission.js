@@ -78,6 +78,18 @@ function readiness(application, { owner = null } = {}) {
   }
 
   /**
+   * Who actually owns the property, when the applicant does not.
+   *
+   * Rates relief belongs to the owner, so an assessor needs a name to check
+   * against the deed once the applicant is a tenant or occupier. The ID number
+   * stays optional — the same leniency as a household member's — but a name is
+   * always obtainable and always needed.
+   */
+  if (['TENANT', 'OCCUPIER'].includes(application.tenure) && !application.ownerFullName) {
+    problems.push("Since you are not the property owner, please add the owner's full name in Property Particulars.");
+  }
+
+  /**
    * The income question has to have been answered one way or the other.
    *
    * An empty list is not an answer — it is the state of a section nobody has

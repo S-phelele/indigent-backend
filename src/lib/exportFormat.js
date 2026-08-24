@@ -73,6 +73,8 @@ const APPLICATION_COLUMNS = [
   ['Ward', (a) => a.wardNumber || ''],
   ['Category', (a) => label('applicantCategory', a.applicantCategory)],
   ['Ownership', (a) => label('tenure', a.tenure)],
+  ['Property owner', (a) => a.ownerFullName || ''],
+  ['Property owner ID number', (a) => (a.ownerIdNumber ? `="${a.ownerIdNumber}"` : '')],
   ['Municipal account', (a) => (a.municipalAccountNumber ? `="${a.municipalAccountNumber}"` : '')],
   ['Household size', (a) => a.peopleOnProperty ?? ''],
   ['Children under 18', (a) => a.childrenUnder18 ?? ''],
@@ -170,6 +172,12 @@ function printableSections(application, { meansTest = null } = {}) {
         ['Residential address', or(a.residentialAddress)],
         ['Postal address', or(a.postalAddress)],
         ['Ownership', label('tenure', a.tenure) || 'Not stated'],
+        ...(['TENANT', 'OCCUPIER'].includes(a.tenure)
+          ? [
+              ['Property owner', or(a.ownerFullName)],
+              ['Property owner ID number', or(a.ownerIdNumber)],
+            ]
+          : []),
         ['Municipal account', or(a.municipalAccountNumber)],
         ['Eskom account', or(a.eskomAccountNumber)],
         ['Water meter', or(a.waterMeterNumber)],
