@@ -142,14 +142,36 @@ test('a band bounds both ends', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Employment status
+// ---------------------------------------------------------------------------
+
+test('employment status narrows to it', () => {
+  const parsed = filters.parse({ employmentStatus: 'UNEMPLOYED' });
+  assert.equal(parsed.where.employmentStatus, 'UNEMPLOYED');
+  assert.ok(labels(parsed).includes('Employment'));
+});
+
+test('an unknown employment status is dropped rather than matching nothing silently', () => {
+  const parsed = filters.parse({ employmentStatus: 'RETIRED' });
+  assert.equal(parsed.where.employmentStatus, undefined);
+  assert.ok(!labels(parsed).includes('Employment'));
+});
+
+// ---------------------------------------------------------------------------
 // The options a client renders
 // ---------------------------------------------------------------------------
 
 test('every filterable enum is offered, so the portal cannot drift from it', () => {
   const options = filters.options();
-  for (const key of ['statuses', 'stages', 'categories', 'tenures', 'channels',
+  for (const key of ['statuses', 'stages', 'categories', 'tenures', 'employmentStatuses', 'channels',
     'householdSizes', 'disability', 'incomeTypes', 'dateFields', 'renewalStatuses']) {
     assert.ok(Array.isArray(options[key]) && options[key].length > 0, `${key} is missing`);
+  }
+});
+
+test('every offered employment status is one the parser will actually accept', () => {
+  for (const option of filters.options().employmentStatuses) {
+    assert.equal(filters.parse({ employmentStatus: option.value }).where.employmentStatus, option.value);
   }
 });
 

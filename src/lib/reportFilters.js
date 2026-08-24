@@ -27,6 +27,7 @@ const STATUSES = ['DRAFT', 'PENDING', 'APPROVED', 'DECLINED'];
 const STAGES = ['VERIFICATION', 'ASSESSMENT', 'SUPERVISOR_SIGNOFF', 'COMPLETE'];
 const CATEGORIES = ['STANDARD', 'PENSIONER', 'DECEASED_ESTATE', 'CHILD_HEADED', 'DISABLED'];
 const TENURES = ['OWNER', 'TENANT', 'OCCUPIER'];
+const EMPLOYMENT_STATUSES = ['EMPLOYED', 'UNEMPLOYED', 'SELF_EMPLOYED', 'PENSIONER', 'OTHER'];
 const RENEWAL_STATUSES = ['ACTIVE', 'DUE_SOON', 'OVERDUE', 'LAPSED'];
 /** captureChannel is a plain string column, not an enum. These are the values
  *  fieldwork.js and the wizard actually write. */
@@ -150,6 +151,12 @@ function parse(query = {}) {
     applied.push({ label: 'Tenure', value: tenure.toLowerCase() });
   }
 
+  const employmentStatus = oneOf(query.employmentStatus, EMPLOYMENT_STATUSES);
+  if (employmentStatus) {
+    where.employmentStatus = employmentStatus;
+    applied.push({ label: 'Employment', value: employmentStatus.replace(/_/g, ' ').toLowerCase() });
+  }
+
   const band = SIZE_BANDS[String(query.householdSize ?? '')];
   if (band) {
     where.peopleOnProperty = { gte: band.min, ...(band.max ? { lte: band.max } : {}) };
@@ -211,6 +218,7 @@ function options() {
     stages: STAGES.map((v) => ({ value: v, label: v.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase()) })),
     categories: CATEGORIES.map((v) => ({ value: v, label: v.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase()) })),
     tenures: TENURES.map((v) => ({ value: v, label: v.charAt(0) + v.slice(1).toLowerCase() })),
+    employmentStatuses: EMPLOYMENT_STATUSES.map((v) => ({ value: v, label: v.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase()) })),
     channels: CHANNELS.map((v) => ({ value: v, label: v.replace(/_/g, ' ').toLowerCase().replace(/^./, (c) => c.toUpperCase()) })),
     householdSizes: Object.entries(SIZE_BANDS).map(([value, b]) => ({ value, label: b.label })),
     disability: Object.entries(DISABILITY).map(([value, d]) => ({ value, label: d.label })),
