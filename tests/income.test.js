@@ -112,12 +112,37 @@ test('detail fields belonging to another type are dropped', () => {
 
 test('informal and registered are both recordable, and neither is assumed', () => {
   const informal = income.validate({ type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: false });
-  const formal = income.validate({ type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: true });
+  const formal = income.validate({
+    type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: true, registrationNumber: '2024/123456/07',
+  });
   const unstated = income.validate({ type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza' });
 
   assert.equal(informal.data.isRegistered, false);
   assert.equal(formal.data.isRegistered, true);
   assert.equal(unstated.data.isRegistered, null, 'not stated must not become false');
+});
+
+test('a registered business must give its registration number', () => {
+  const result = income.validate({ type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: true });
+  assert.equal(result.valid, false);
+  assert.match(result.reason, /registration number/i);
+});
+
+test('an informal business is never asked for a registration number', () => {
+  const result = income.validate({ type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: false });
+  assert.equal(result.valid, true);
+  assert.equal(result.data.registrationNumber, null);
+});
+
+test('a registration number left behind on an informal business is dropped', () => {
+  // Switching the answer from "registered" to "informal" without clearing the
+  // number field is exactly the case this guards — the number belongs to
+  // nothing once the business says it is informal.
+  const result = income.validate({
+    type: 'BUSINESS', monthlyAmount: 700, businessName: 'Spaza', isRegistered: false, registrationNumber: '2024/123456/07',
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.data.registrationNumber, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -230,6 +255,13 @@ test('a business says whether it is registered', () => {
   const informal = income.describe(source('BUSINESS', 900, { businessName: 'Spaza', isRegistered: false }));
   assert.match(formal, /registered/);
   assert.match(informal, /informal/);
+});
+
+test('a registered business reads with its registration number', () => {
+  const sentence = income.describe(
+    source('BUSINESS', 900, { businessName: 'Spaza', isRegistered: true, registrationNumber: '2024/123456/07' })
+  );
+  assert.match(sentence, /2024\/123456\/07/);
 });
 
 test('a grant reads as its own plain label', () => {

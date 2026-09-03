@@ -75,6 +75,8 @@ const APPLICATION_COLUMNS = [
   ['Ownership', (a) => label('tenure', a.tenure)],
   ['Property owner', (a) => a.ownerFullName || ''],
   ['Property owner ID number', (a) => (a.ownerIdNumber ? `="${a.ownerIdNumber}"` : '')],
+  ['Property owner relationship', (a) => a.ownerRelationship || ''],
+  ['Property owner deceased', (a) => yesNo(a.ownerDeceased)],
   ['Municipal account', (a) => (a.municipalAccountNumber ? `="${a.municipalAccountNumber}"` : '')],
   ['Household size', (a) => a.peopleOnProperty ?? ''],
   ['Children under 18', (a) => a.childrenUnder18 ?? ''],
@@ -176,6 +178,8 @@ function printableSections(application, { meansTest = null } = {}) {
           ? [
               ['Property owner', or(a.ownerFullName)],
               ['Property owner ID number', or(a.ownerIdNumber)],
+              ['Relationship to owner', or(a.ownerRelationship)],
+              ['Owner deceased', a.ownerDeceased == null ? 'Not stated' : yesNo(a.ownerDeceased)],
             ]
           : []),
         ['Municipal account', or(a.municipalAccountNumber)],

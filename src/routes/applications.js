@@ -243,7 +243,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
       'residentialAddress', 'employerName', 'employerAddress',
       'workTelNumber', 'employmentStatus', 'waterMeterNumber', 'electricityMeterNumber',
       'wardNumber', 'municipalAccountNumber', 'eskomAccountNumber',
-      'otherPropertyDetails', 'incomeExclusions', 'ownerFullName', 'ownerIdNumber',
+      'otherPropertyDetails', 'incomeExclusions', 'ownerFullName', 'ownerIdNumber', 'ownerRelationship',
     ];
     stringKeys.forEach((key) => {
       if (body[key] !== undefined) {
@@ -494,7 +494,7 @@ router.patch('/:id', access.loadFor('edit'), async (req, res) => {
 
     // Yes/No booleans
     ['ownsImmovableProperty', 'isFullTimeOccupant', 'incomeBelowThreshold',
-      'hasMunicipalArrears', 'hasArrearsArrangement', 'ownsOtherProperty'].forEach((key) => {
+      'hasMunicipalArrears', 'hasArrearsArrangement', 'ownsOtherProperty', 'ownerDeceased'].forEach((key) => {
       if (body[key] !== undefined) {
         const b = toBool(body[key]);
         if (b !== undefined) updateData[key] = b;

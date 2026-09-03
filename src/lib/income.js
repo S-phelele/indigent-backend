@@ -49,7 +49,7 @@ const TYPES = [
     value: 'BUSINESS',
     label: 'A business',
     hint: 'Formal or informal. Both count, and neither disqualifies you.',
-    asks: ['businessName', 'businessType', 'isRegistered'],
+    asks: ['businessName', 'businessType', 'isRegistered', 'registrationNumber'],
     required: ['businessName'],
   },
   { value: 'CHILD_GRANT', label: 'Child support grant', hint: 'Per child, from SASSA.', asks: [], required: [] },
@@ -82,7 +82,7 @@ const byType = (type) => TYPES.find((t) => t.value === type) || null;
 const labelFor = (type) => byType(type)?.label || type;
 
 /** Every field any type may carry, so a caller can strip anything else. */
-const DETAIL_FIELDS = ['jobDescription', 'employerName', 'businessName', 'businessType', 'isRegistered', 'otherDetail'];
+const DETAIL_FIELDS = ['jobDescription', 'employerName', 'businessName', 'businessType', 'isRegistered', 'registrationNumber', 'otherDetail'];
 
 const num = (v) => {
   if (v === null || v === undefined || v === '') return null;
@@ -130,6 +130,25 @@ function validate(input = {}) {
   for (const field of definition.required) {
     if (data[field] === null) {
       return { valid: false, reason: missingMessage(definition, field) };
+    }
+  }
+
+  /**
+   * A registered business has a number to check; an informal one has nothing
+   * to put there.
+   *
+   * Not in `required` above because it depends on another answer rather than
+   * on the type alone. Cleared rather than left in place when the business is
+   * informal or unstated — the same reasoning as detail fields belonging to
+   * another type: a number sitting on a row that says "informal" is not a
+   * fact about that business, whatever a client happened to send.
+   */
+  if (type === 'BUSINESS') {
+    if (data.isRegistered === true && !data.registrationNumber) {
+      return { valid: false, reason: 'Please give the business registration number, or say it is not registered.' };
+    }
+    if (data.isRegistered !== true) {
+      data.registrationNumber = null;
     }
   }
 
@@ -216,7 +235,11 @@ function describe(source) {
     case 'BUSINESS':
       return `${label} — ${source.businessName}`
         + `${source.businessType ? ` (${source.businessType})` : ''}`
-        + `${source.isRegistered === null || source.isRegistered === undefined ? '' : source.isRegistered ? ', registered' : ', informal'}`;
+        + `${source.isRegistered === null || source.isRegistered === undefined
+          ? ''
+          : source.isRegistered
+            ? `, registered${source.registrationNumber ? ` (${source.registrationNumber})` : ''}`
+            : ', informal'}`;
     case 'OTHER':
       return `${label} — ${source.otherDetail}`;
     default:

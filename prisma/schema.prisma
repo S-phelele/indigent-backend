@@ -519,6 +519,15 @@ model Application {
   /// member's: a tenant often knows their landlord's name and not their ID.
   ownerFullName         String?
   ownerIdNumber         String?
+  /// How the owner relates to the applicant — "landlord", "father", "the
+  /// municipality" — in the applicant's own words, the same free text a
+  /// household member's relationship is recorded in.
+  ownerRelationship     String?
+  /// Whether the owner named above has since died. Distinct from
+  /// `applicantCategory: DECEASED_ESTATE`, which is about who is answering for
+  /// the household — this is a fact about a specific third party, and both can
+  /// be true, or neither.
+  ownerDeceased         Boolean?
 
   /// Any other property held anywhere in the country. Declaring one is not
   /// automatically disqualifying — an inherited plot with no services is not
@@ -818,6 +827,9 @@ model IncomeSource {
   /// Registered with CIPC, or trading informally. Both are legitimate and
   /// neither disqualifies; only one leaves a paper trail a check can find.
   isRegistered   Boolean?
+  /// BUSINESS and isRegistered only: the CIPC registration number, so the
+  /// paper trail a registered business leaves is actually checkable.
+  registrationNumber String?
 
   /// OTHER only, and required there: a fixed list would silently drop whatever
   /// it failed to anticipate.
