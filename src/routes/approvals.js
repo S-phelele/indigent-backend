@@ -154,6 +154,75 @@ router.get('/queue', respond.handler(async (req, res) => {
 }, 'approvals queue'));
 
 /**
+ * Everything this officer has personally decided.
+ *
+ * The queue only ever shows what is still waiting; the moment somebody decides
+ * a case it leaves their screen and there was nowhere to look back at it. A
+ * verification officer, an assessment officer and a supervisor all ask the
+ * same question in the end — "what have I actually done" — so one endpoint
+ * answers it for all three rather than three copies of the same query.
+ *
+ * Scoped to `actorId`, not to the stage the caller currently holds: a
+ * promotion carries a history forward instead of losing it, and an admin
+ * standing in for a stage still gets credited for the case in their own trail.
+ */
+router.get('/history', respond.handler(async (req, res) => {
+  const requested = sanitize.oneOf(req.query.stage, chain.STAGES);
+  const { page, take, skip } = sanitize.pagination(req.query, { defaultSize: 20 });
+
+  const where = {
+    actorId: req.user.id,
+    outcome: { not: 'PENDING' },
+    ...(requested ? { stage: requested } : {}),
+  };
+
+  const [steps, total] = await Promise.all([
+    prisma.approvalStep.findMany({
+      where,
+      select: {
+        id: true, applicationId: true, stage: true, outcome: true, decidedAt: true, notes: true,
+        returnedTo: true, returnReason: true, isOverride: true,
+        application: {
+          select: {
+            reference: true, names: true, fullName: true, surname: true, idNumber: true,
+            wardNumber: true, status: true,
+          },
+        },
+      },
+      orderBy: { decidedAt: 'desc' },
+      skip,
+      take,
+    }),
+    prisma.approvalStep.count({ where }),
+  ]);
+
+  res.json({
+    success: true,
+    data: steps.map((s) => ({
+      id: s.id,
+      applicationId: s.applicationId,
+      reference: s.application.reference,
+      name: names.display(s.application),
+      idNumber: s.application.idNumber,
+      wardNumber: s.application.wardNumber,
+      // Where the application stands today, which can differ from what this
+      // step decided — a recommendation to approve does not mean the household
+      // was ultimately approved, if a later stage returned or refused it.
+      currentStatus: s.application.status,
+      stage: s.stage,
+      stageLabel: chain.config(s.stage)?.label,
+      outcome: s.outcome,
+      decidedAt: s.decidedAt,
+      notes: s.notes,
+      returnedTo: s.returnedTo,
+      returnReason: s.returnReason,
+      isOverride: s.isOverride,
+    })),
+    pagination: { page, pageSize: take, total, totalPages: Math.ceil(total / take) || 1 },
+  });
+}, 'approval history'));
+
+/**
  * One application, with everything the current stage needs.
  *
  * The means test is computed live rather than read from the record, so an

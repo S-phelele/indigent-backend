@@ -162,14 +162,26 @@ router.get('/roles', (req, res) => {
 });
 
 /** List councillors, with how much each has captured. */
+/**
+ * Every role this screen will ever show — the ones it can create and manage
+ * outright, plus the privileged two, listed for visibility only.
+ *
+ * Kept apart from `MANAGEABLE_ROLES` deliberately: the list broadens so an
+ * administrator can see who else holds admin access, which is worth knowing,
+ * but the view/edit/delete/reset/unlock routes below stay scoped to
+ * `MANAGEABLE_ROLES` alone — seeing an administrator here does not mean this
+ * screen can act on one.
+ */
+const VISIBLE_ROLES = [...MANAGEABLE_ROLES, ...PRIVILEGED_ROLES];
+
 router.get('/', async (req, res) => {
   try {
     const { status = 'all', search = '' } = req.query;
-    const role = sanitize.oneOf(req.query.role, MANAGEABLE_ROLES);
+    const role = sanitize.oneOf(req.query.role, VISIBLE_ROLES);
     const term = sanitize.searchTerm(search);
 
     /**
-     * Scoped to the roles this screen manages, always.
+     * Scoped to every role this screen will show, always.
      *
      * `role` from the query narrows *within* that set; it can never widen it. An
      * earlier version passed the query value straight through, which with no
@@ -179,7 +191,7 @@ router.get('/', async (req, res) => {
      * standing between a staff screen and the whole user table.
      */
     const where = {
-      role: role ? role : { in: MANAGEABLE_ROLES },
+      role: role ? role : { in: VISIBLE_ROLES },
       ...(status === 'active' ? { isActive: true } : {}),
       ...(status === 'inactive' ? { isActive: false } : {}),
       ...(term
@@ -278,10 +290,23 @@ router.post('/', async (req, res) => {
   try {
     const { email, firstName, lastName, cellNumber, ward, idNumber, role = 'COUNCILLOR' } = req.body || {};
 
-    if (!MANAGEABLE_ROLES.includes(role)) {
+    /**
+     * An administrator may hand out any of the working roles; only a superuser
+     * may hand out Administrator or Super Administrator.
+     *
+     * `/roles` already told a superuser those two were assignable — this used to
+     * refuse them regardless of who asked, so the one account actually entitled
+     * to grant admin access got a 400 for doing exactly what the form offered.
+     * A plain administrator still cannot: creating another administrator is
+     * deliberately not a routine action on this screen, only a superuser's.
+     */
+    const creatable = [...MANAGEABLE_ROLES, ...(req.user.role === 'SUPERUSER' ? PRIVILEGED_ROLES : [])];
+    if (!creatable.includes(role)) {
       return res.status(400).json({
         success: false,
-        message: `Role must be one of: ${MANAGEABLE_ROLES.join(', ')}. Administrator accounts are not created here.`,
+        message: req.user.role === 'SUPERUSER'
+          ? `Role must be one of: ${creatable.join(', ')}.`
+          : `Role must be one of: ${MANAGEABLE_ROLES.join(', ')}. Only a super administrator can create an administrator account.`,
       });
     }
 
@@ -364,19 +389,36 @@ router.post('/', async (req, res) => {
   }
 });
 
-/** Correct a councillor's details, or deactivate them. */
+/** Correct a councillor's details, change their role, or deactivate them. */
 router.patch('/:id', async (req, res) => {
   try {
     const councillor = await prisma.user.findFirst({
       where: { id: req.params.id, role: { in: MANAGEABLE_ROLES } },
-      select: { id: true, email: true, isActive: true },
+      select: { id: true, email: true, role: true, isActive: true },
     });
     if (!councillor) {
       return res.status(404).json({ success: false, message: 'We could not find that staff member.' });
     }
 
-    const { firstName, lastName, cellNumber, ward, email, isActive } = req.body || {};
+    const { firstName, lastName, cellNumber, ward, email, isActive, role } = req.body || {};
     const data = {};
+
+    /**
+     * A promotion, worked the same way any other correction on this screen is —
+     * an assessment officer moving to supervisor, or a councillor moving to the
+     * front desk. Bounded to the same five roles this screen may already create,
+     * so this can never be the route that grants administrator access; that
+     * stays a deliberate, separate action for a superuser alone.
+     */
+    if (role !== undefined && role !== councillor.role) {
+      if (!MANAGEABLE_ROLES.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: `Role must be one of: ${MANAGEABLE_ROLES.join(', ')}.`,
+        });
+      }
+      data.role = role;
+    }
 
     if (firstName !== undefined) data.firstName = firstName ? String(firstName).trim() : null;
     if (lastName !== undefined) data.lastName = lastName ? String(lastName).trim() : null;
@@ -410,10 +452,16 @@ router.patch('/:id', async (req, res) => {
       entityId: updated.id,
       details: data.isActive === false
         ? `Deactivated councillor ${updated.email}`
-        : `Updated councillor ${updated.email}`,
+        : data.role
+          ? `Changed ${updated.email} from ${ROLE_LABELS[councillor.role]} to ${ROLE_LABELS[updated.role]}`
+          : `Updated councillor ${updated.email}`,
     });
 
-    res.json({ success: true, message: 'Staff member updated', data: { ...updated, name: fullName(updated), roleLabel: ROLE_LABELS[updated.role] } });
+    res.json({
+      success: true,
+      message: data.role ? `${fullName(updated)} is now ${ROLE_LABELS[updated.role]}.` : 'Staff member updated',
+      data: { ...updated, name: fullName(updated), roleLabel: ROLE_LABELS[updated.role] },
+    });
   } catch (error) {
     console.error('update staff error:', error);
     res.status(500).json({ success: false, message: 'We could not save those changes. Please try again.' });
