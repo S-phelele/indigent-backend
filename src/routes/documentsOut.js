@@ -298,8 +298,17 @@ router.get('/statistics.xls', exportLimiter, respond.handler(async (req, res) =>
  * headless browser is a hundred megabytes of dependency and a second process to
  * keep alive, to produce something every device can already make from a page
  * that is styled for print.
+ *
+ * Deliberately not behind `exportLimiter`. That budget — 20 a hour — is sized
+ * for a bulk file export, and this route fires on every page load *and* every
+ * filter change, which is normal use of a filterable report, not a handful of
+ * downloads. Sharing the budget meant somebody trying a few filters in a row
+ * exhausted it mid-session and the report went blank with a rate-limit error
+ * on an otherwise bare printable page — easy to mistake for the page itself
+ * being broken. It carries the same cost as the analytics dashboard, which
+ * has never been limited.
  */
-router.get('/statistics', exportLimiter, respond.handler(async (req, res) => {
+router.get('/statistics', respond.handler(async (req, res) => {
   const report = await reportFor(req);
 
   await audit.record(req, {

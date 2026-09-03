@@ -363,7 +363,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 });
 
 // Send a cell-verification code
-router.post('/send-otp', otpSendLimiter, async (req, res) => {
+router.post('/send-otp', authenticate, otpSendLimiter, async (req, res) => {
   try {
     const { cellNumber } = req.body;
 
@@ -371,8 +371,20 @@ router.post('/send-otp', otpSendLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please enter a valid cell number, for example 082 123 4567.' });
     }
 
+    /**
+     * Requires a signed-in caller, so the code this issues can actually verify
+     * somebody.
+     *
+     * This used to accept `req.user?.id || null` from an unauthenticated route,
+     * which meant every "resend" on the verify screen — the normal path, not an
+     * edge case — invalidated the code registration had correctly linked to the
+     * account and replaced it with one linked to nobody. verify-otp still
+     * reported success on that code because the code itself was right; it just
+     * never had an account to mark verified. The applicant believed they were
+     * verified, and every gate that checks the database afterwards refused them.
+     */
     const { code, expiresAt } = await otpService.issue(cellNumber, {
-      userId: req.user?.id || null,
+      userId: req.user.id,
       purpose: otpService.PURPOSE.VERIFY_CELL,
     });
 
@@ -383,7 +395,7 @@ router.post('/send-otp', otpSendLimiter, async (req, res) => {
     await sms.send(
       cellNumber,
       smsTemplates.build('OTP', { code, minutes: otpService.EXPIRY_MINUTES }),
-      { purpose: 'OTP', userId: req.user?.id || null, secrets: [code] }
+      { purpose: 'OTP', userId: req.user.id, secrets: [code] }
     );
 
     res.json({
@@ -426,41 +438,54 @@ router.post('/verify-otp', otpVerifyLimiter, async (req, res) => {
      * `cellVerifiedAt` was never recorded — so nothing could later say when.
      *
      * `result.otp.userId` is set when the code was issued to a known account,
-     * which registration and `send-otp` both do.
+     * which registration and `send-otp` both do. The lookup by number is a
+     * fallback only, for a code issued some other way — this must never report
+     * success without actually verifying an account, because the applicant
+     * portal trusts that response and stops asking.
      */
-    let verifiedUser = null;
-    if (result.otp?.userId) {
-      verifiedUser = await prisma.user.update({
-        where: { id: result.otp.userId },
-        data: {
-          isVerified: true,
-          cellVerifiedAt: new Date(),
-          cellNumber: sms.normaliseNumber(cellNumber) || cellNumber,
-        },
-        select: { id: true, email: true, role: true, firstName: true, lastName: true, cellNumber: true, idNumber: true, isVerified: true },
-      });
+    const userId = result.otp?.userId
+      || (await prisma.user.findFirst({
+        where: { cellNumber: sms.normaliseNumber(cellNumber) || cellNumber },
+        select: { id: true },
+      }))?.id;
 
-      await audit.record(req, {
-        action: audit.ACTIONS.VERIFY_CELL,
-        entityType: 'User',
-        entityId: verifiedUser.id,
-        details: `Cell number ending ${String(cellNumber).slice(-4)} verified`,
-        actor: verifiedUser,
-      });
-
-      // Held back at registration so it could not be mistaken for the code.
-      await sms.send(verifiedUser.cellNumber, smsTemplates.build('WELCOME', { firstName: verifiedUser.firstName }), {
-        purpose: 'WELCOME',
-        userId: verifiedUser.id,
-        entityType: 'User',
-        entityId: verifiedUser.id,
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'That code was not issued to a registered account. Please request a new one.',
       });
     }
+
+    const verifiedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        isVerified: true,
+        cellVerifiedAt: new Date(),
+        cellNumber: sms.normaliseNumber(cellNumber) || cellNumber,
+      },
+      select: { id: true, email: true, role: true, firstName: true, lastName: true, cellNumber: true, idNumber: true, isVerified: true },
+    });
+
+    await audit.record(req, {
+      action: audit.ACTIONS.VERIFY_CELL,
+      entityType: 'User',
+      entityId: verifiedUser.id,
+      details: `Cell number ending ${String(cellNumber).slice(-4)} verified`,
+      actor: verifiedUser,
+    });
+
+    // Held back at registration so it could not be mistaken for the code.
+    await sms.send(verifiedUser.cellNumber, smsTemplates.build('WELCOME', { firstName: verifiedUser.firstName }), {
+      purpose: 'WELCOME',
+      userId: verifiedUser.id,
+      entityType: 'User',
+      entityId: verifiedUser.id,
+    });
 
     res.json({
       success: true,
       message: 'Cell number verified',
-      data: verifiedUser ? { user: verifiedUser } : undefined,
+      data: { user: verifiedUser },
     });
   } catch (error) {
     console.error('verify-otp error:', error);
