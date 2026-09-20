@@ -188,7 +188,7 @@ router.get('/:id/timeline', async (req, res) => {
         reference: application.reference,
         stages: timeline.stages(application),
         nextAction: timeline.nextAction(application),
-        events: timeline.events(auditRows, { forApplicant: req.user.role !== 'ADMIN' }),
+        events: timeline.events(auditRows, { forApplicant: req.user.role !== 'ADMIN' && req.user.role !== 'SUPERUSER' }),
         documents: timeline.documentProgress(application.documents),
         reviewNotes: application.reviewNotes,
         submittedAt: application.submittedAt,

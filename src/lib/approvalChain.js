@@ -244,6 +244,10 @@ function position(application, { steps = [], user = null } = {}) {
  *
  * Returns only the change; the caller writes it together with the step row so
  * the position and its history can never disagree.
+ *
+ * A refusal at any stage is final: the application does not move to assessment
+ * or sign-off. Only an approval recommendation advances the file. Final
+ * approval still only happens at the stage marked `decides` (sign-off).
  */
 function advance(application, { outcome, stage }) {
   const stageConfig = config(stage);
@@ -253,7 +257,17 @@ function advance(application, { outcome, stage }) {
     throw new Error('[approvalChain] use returnTo for a RETURNED outcome');
   }
 
-  // Only the deciding stage changes the application's status.
+  // Decline stops the chain immediately — verification, assessment or sign-off.
+  if (outcome === 'REJECTED' || outcome === 'RECOMMEND_REJECT') {
+    return {
+      approvalStage: 'COMPLETE',
+      status: 'DECLINED',
+      reviewedAt: new Date(),
+      verificationStage: 'COMPLETE',
+    };
+  }
+
+  // Final approval only at the deciding stage (supervisor sign-off).
   if (stageConfig.decides) {
     const approved = outcome === 'APPROVED';
     return {
@@ -264,6 +278,7 @@ function advance(application, { outcome, stage }) {
     };
   }
 
+  // Approval recommendation — move to the next stage.
   return { approvalStage: stageConfig.next };
 }
 
@@ -282,9 +297,9 @@ function describeStep(step) {
 
   switch (step.outcome) {
     case 'RECOMMEND_APPROVE': return `${who} completed ${stage.toLowerCase()} and recommended approval`;
-    case 'RECOMMEND_REJECT': return `${who} completed ${stage.toLowerCase()} and recommended refusal`;
+    case 'RECOMMEND_REJECT': return `${who} declined the application at ${stage.toLowerCase()}`;
     case 'APPROVED': return `${who} signed the application off as approved`;
-    case 'REJECTED': return `${who} signed the application off as declined`;
+    case 'REJECTED': return `${who} declined the application${stage ? ` at ${stage.toLowerCase()}` : ''}`;
     case 'RETURNED': return `${who} returned the application to ${config(step.returnedTo)?.label.toLowerCase() || step.returnedTo}`;
     default: return `${who} opened ${stage.toLowerCase()}`;
   }

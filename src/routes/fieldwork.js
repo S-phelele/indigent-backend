@@ -403,7 +403,8 @@ router.post('/applications/:id/submit', async (req, res) => {
     }
 
     const mine = application.capturedById === req.user.id;
-    if (!mine && req.user.role !== 'ADMIN') {
+    const privileged = req.user.role === 'ADMIN' || req.user.role === 'SUPERUSER';
+    if (!mine && !privileged) {
       return res.status(404).json({ success: false, message: 'We could not find that application.' });
     }
     if (application.status !== 'DRAFT') {

@@ -148,10 +148,10 @@ const STAFF_ROLES = ['SUPERUSER', 'ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER', 'VER
 const requireStaff = requireRole(...STAFF_ROLES);
 
 /** Roles that may capture an application on somebody's behalf. */
-const requireCapture = requireRole('ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER');
+const requireCapture = requireRole('SUPERUSER','ADMIN', 'COUNCILLOR', 'CAPTURE_OFFICER');
 
 /** Roles that may verify. Deliberately excludes anyone who captures. */
-const requireVerifier = requireRole('ADMIN', 'VERIFICATION_OFFICER');
+const requireVerifier = requireRole('SUPERUSER','ADMIN', 'VERIFICATION_OFFICER');
 
 /** Roles that work a stage of the approval chain. */
 const APPROVER_ROLES = ['SUPERUSER', 'ADMIN', 'VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR'];

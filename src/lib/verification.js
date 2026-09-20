@@ -56,7 +56,7 @@ function consentGate(application) {
  * household from the door to an approval unchallenged.
  */
 function separationOfDuties(application, officer) {
-  if (officer.role === 'ADMIN') return { ok: true };
+  if (officer.role === 'ADMIN' || officer.role === 'SUPERUSER') return { ok: true };
   if (application.capturedById && application.capturedById === officer.id) {
     return {
       ok: false,

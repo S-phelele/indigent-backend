@@ -19,24 +19,33 @@
  * more permissive than the rest.
  */
 
-/** Roles that capture applications on somebody's behalf. */
-const CAPTURE_ROLES = ['COUNCILLOR', 'CAPTURE_OFFICER'];
+/**
+ * Roles that capture applications on somebody's behalf in the field or at the
+ * desk. ADMIN and SUPERUSER are included so a superuser can register a household
+ * the same way a councillor or front-desk officer does.
+ */
+const CAPTURE_ROLES = ['COUNCILLOR', 'CAPTURE_OFFICER', 'ADMIN', 'SUPERUSER'];
 
 const isOwner = (user, application) => application.userId === user.id;
-const isAdmin = (user) => user.role === 'ADMIN';
+
+/**
+ * Administrators and superusers see every application.
+ *
+ * SUPERUSER is included on purpose: the role exists so one account can oversee
+ * the register and walk a case through every stage, which is impossible if it
+ * cannot open the file in the first place.
+ */
+const isAdmin = (user) => user.role === 'ADMIN' || user.role === 'SUPERUSER';
 
 /**
  * The staff member who captured this application, while it remains a draft.
  *
- * Covers every capturing role, not just councillors. This originally named
- * COUNCILLOR alone, which silently locked capture officers out of editing their
- * own captures the moment that role was introduced — the sort of gap that
- * appears whenever an access rule enumerates roles instead of asking what
- * somebody actually did.
+ * Judged by what they did (capturedById), not by role alone. That way an
+ * ADMIN or SUPERUSER who registers a household at the counter can finish the
+ * draft they started — the same path a councillor uses door to door.
  */
 const isCapturer = (user, application) =>
-  CAPTURE_ROLES.includes(user.role)
-  && application.capturedById === user.id
+  application.capturedById === user.id
   && application.status === 'DRAFT';
 
 /**
@@ -44,26 +53,38 @@ const isCapturer = (user, application) =>
  * captures" can show an outcome. They see the status, not the review.
  */
 const capturedByThem = (user, application) =>
-  CAPTURE_ROLES.includes(user.role) && application.capturedById === user.id;
+  application.capturedById === user.id;
 
 /**
  * Verification officers may read any submitted application.
  *
  * Not drafts: an unsubmitted form is the applicant's private working copy, and
  * there is nothing to verify until they send it.
+ *
+ * SUPERUSER and ADMIN already pass via isAdmin; they are not repeated here.
  */
-const isVerifierOfSubmitted = (user, application) =>
-  user.role === 'VERIFICATION_OFFICER' && application.status !== 'DRAFT';
+/** Roles that review submitted applications (verify / assess / sign-off). */
+const REVIEW_ROLES = ['VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR', 'ADMIN', 'SUPERUSER'];
+
+const isReviewerOfSubmitted = (user, application) =>
+  REVIEW_ROLES.includes(user?.role) && application.status !== 'DRAFT';
+
+// Kept under the old name so existing imports keep working.
+const isVerifierOfSubmitted = isReviewerOfSubmitted;
 
 function canView(user, application) {
-  return isAdmin(user)
-    || isOwner(user, application)
+  // Role checked directly as well as via isAdmin — keeps capture/oversight
+  // working even if a partial user object is passed in.
+  if (user?.role === 'ADMIN' || user?.role === 'SUPERUSER') return true;
+  return isOwner(user, application)
     || capturedByThem(user, application)
-    || isVerifierOfSubmitted(user, application);
+    || isReviewerOfSubmitted(user, application);
 }
 
 function canEdit(user, application) {
   if (application.status !== 'DRAFT') return false;
+  // Superuser and admin may edit any draft (field capture and oversight).
+  if (user?.role === 'ADMIN' || user?.role === 'SUPERUSER') return true;
   return isOwner(user, application) || isCapturer(user, application);
 }
 
@@ -94,17 +115,26 @@ function loadFor(mode, { include } = {}) {
         return res.status(404).json({ success: false, message: 'We could not find that application.' });
       }
 
-      if (!canView(req.user, application)) {
+      /**
+       * SUPERUSER and ADMIN always pass every mode.
+       *
+       * Checked here (not only inside canView/canEdit) so household, income and
+       * document routes cannot refuse a superuser who is capturing or overseeing
+       * a case — those routes all share this guard.
+       */
+      const privileged = req.user?.role === 'ADMIN' || req.user?.role === 'SUPERUSER';
+
+      if (!privileged && !canView(req.user, application)) {
         // Deliberately the same response as a missing record. Confirming that an
         // application exists but belongs to someone else leaks that a given
         // person is on the indigent register.
         console.warn(
-          `[access] ${req.user.role} ${req.user.id} was refused ${mode} on application ${application.id}`
+          `[access] ${req.user?.role} ${req.user?.id} was refused ${mode} on application ${application.id}`
         );
         return res.status(404).json({ success: false, message: 'We could not find that application.' });
       }
 
-      if (check !== canView && !check(req.user, application)) {
+      if (!privileged && check !== canView && !check(req.user, application)) {
         return res.status(400).json({
           success: false,
           message: application.status === 'DRAFT'
@@ -121,6 +151,9 @@ function loadFor(mode, { include } = {}) {
     }
   };
 }
+
+// Visible in the backend console on startup so you can confirm this file loaded.
+console.log('[applicationAccess] loaded — SUPERUSER/ADMIN are privileged for view/edit/submit');
 
 module.exports = {
   canView,

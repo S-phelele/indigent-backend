@@ -28,7 +28,8 @@ const router = express.Router();
  */
 const VISIT_OUTCOMES = ['SCHEDULED', 'VERIFIED', 'NO_ACCESS', 'OCCUPANT_ABSENT', 'ADDRESS_NOT_FOUND', 'DETAILS_DISPUTED'];
 const CHECK_OUTCOMES = ['PASS', 'FAIL', 'INCONCLUSIVE', 'NOT_APPLICABLE'];
-router.use(...protect, requireRole('VERIFICATION_OFFICER', 'ADMIN'), staffLimiter);
+// SUPERUSER is admitted by requireRole's built-in privilege; listed for clarity.
+router.use(...protect, requireRole('VERIFICATION_OFFICER', 'ADMIN', 'SUPERUSER'), staffLimiter);
 router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 
 const officerName = (u) => [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
@@ -38,7 +39,13 @@ const FULL_INCLUDE = {
   incomeSources: { orderBy: { createdAt: 'asc' } },
   siteVisits: { orderBy: { attempt: 'asc' } },
   checks: { orderBy: { checkedAt: 'desc' } },
-  documents: { select: { id: true, name: true, type: true, status: true, importance: true, requirementGroup: true } },
+  documents: {
+    select: {
+      id: true, name: true, type: true, status: true, importance: true,
+      requirementGroup: true, fileName: true, filePath: true,
+    },
+    orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }],
+  },
   user: { select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true } },
   capturedBy: { select: { id: true, firstName: true, lastName: true, ward: true } },
 };
@@ -523,33 +530,62 @@ router.post('/applications/:id/recommend', async (req, res) => {
   }
 });
 
-/** Ask the applicant for more before recommending. */
+/**
+ * Send the application back to the applicant for corrections.
+ *
+ * Used when documents or declared details do not match. The case returns to
+ * DRAFT so the resident (or the original capturer) can fix and resubmit; the
+ * reason is stored on the audit trail and sent by notification and SMS.
+ */
 router.post('/applications/:id/request-information', async (req, res) => {
   try {
     const { message } = req.body || {};
     if (!message?.trim()) {
-      return res.status(400).json({ success: false, message: 'Say what is needed from the applicant.' });
+      return res.status(400).json({ success: false, message: 'Say why the application is being sent back and what must be corrected.' });
     }
 
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
-      select: { id: true, reference: true, userId: true, capturedById: true, user: { select: { cellNumber: true } } },
+      select: {
+        id: true, reference: true, userId: true, capturedById: true, status: true,
+        user: { select: { cellNumber: true } },
+      },
     });
     if (!application) return res.status(404).json({ success: false, message: 'We could not find that application.' });
 
+    const reason = message.trim();
+
     await prisma.application.update({
       where: { id: application.id },
-      data: { verificationStage: 'AWAITING_INFORMATION' },
+      data: {
+        // Back to draft so the applicant can edit fields and replace documents.
+        status: 'DRAFT',
+        verificationStage: 'AWAITING_INFORMATION',
+        recommendation: null,
+        // Point them at documents — the usual reason for a return.
+        currentStep: 5,
+      },
     });
 
     await notify.toUser(application.userId, {
       type: notify.TYPE.INFORMATION_REQUESTED,
-      title: 'We need more information',
-      body: message.trim(),
+      title: 'Your application was sent back for corrections',
+      body: reason,
       link: `/applications/${application.id}`,
       entityType: 'Application',
       entityId: application.id,
     });
+
+    if (application.capturedById && application.capturedById !== application.userId) {
+      await notify.toUser(application.capturedById, {
+        type: notify.TYPE.INFORMATION_REQUESTED,
+        title: 'A capture was sent back for corrections',
+        body: reason,
+        link: `/captures`,
+        entityType: 'Application',
+        entityId: application.id,
+      });
+    }
 
     await sms.send(
       application.user?.cellNumber,
@@ -563,10 +599,13 @@ router.post('/applications/:id/request-information', async (req, res) => {
       action: audit.ACTIONS.REQUEST_INFORMATION,
       entityType: 'Application',
       entityId: application.id,
-      details: message.trim(),
+      details: `Returned to applicant: ${reason}`,
     });
 
-    res.json({ success: true, message: 'The applicant has been asked, by notification and SMS.' });
+    res.json({
+      success: true,
+      message: 'Application sent back to the applicant with your reason. They can correct and resubmit.',
+    });
   } catch (error) {
     console.error('request information error:', error);
     res.status(500).json({ success: false, message: 'We could not send that request. Please try again.' });

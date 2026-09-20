@@ -71,7 +71,20 @@ function assess(application, { checks = [], household = [], threshold = THRESHOL
   const assessedIncome = Math.max(declared, highestFound ?? 0, memberIncome);
 
   const people = Math.max(1, application.peopleOnProperty || household.length + 1 || 1);
+  // Reference only: household total ÷ headcount. Assessment screens should show
+  // each person's stated income (household members + income sources), not this
+  // average, as the primary "per person" picture.
   const perPerson = Math.round((assessedIncome / people) * 100) / 100;
+
+  // Lines the assessor should read as "what this person earns", not a share of the pot.
+  const personLines = [
+    ...household.map((m) => ({
+      id: m.id,
+      name: m.fullName || 'Household member',
+      role: m.relationship || 'Household member',
+      monthlyIncome: num(m.monthlyIncome) ?? 0,
+    })),
+  ];
 
   const overThreshold = assessedIncome > threshold;
   const underPerPersonFloor = perPerson <= PER_PERSON_FLOOR;
@@ -144,6 +157,8 @@ function assess(application, { checks = [], household = [], threshold = THRESHOL
     assessedIncome,
     people,
     perPerson,
+    /** Each household member's stated own income (not a share of the total). */
+    personLines,
     overThreshold,
     /** How far over, so an officer can see whether it is R50 or R5 000. */
     marginOverThreshold: overThreshold ? Math.round((assessedIncome - threshold) * 100) / 100 : 0,

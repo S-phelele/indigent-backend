@@ -20,6 +20,8 @@ const { passwordProblems, temporaryPassword } = require('../lib/credentials');
 const cache = require('../lib/cache');
 const { staffLimiter, exportLimiter } = require('../lib/rateLimit');
 const names = require('../lib/names');
+const householdRoutes = require('./household');
+const incomeRoutes = require('./income');
 
 const router = express.Router();
 
@@ -29,6 +31,14 @@ router.use(...protect, requireAdmin, staffLimiter);
 // disagree with them for the next minute. Any successful write here drops the
 // cached figures.
 router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.USERS, cache.TAGS.ANALYTICS));
+
+/**
+ * Household and income for Superuser capture:
+ *   /api/admin/applications/:id/household
+ *   /api/admin/applications/:id/income
+ */
+router.use('/applications', householdRoutes);
+router.use('/applications', incomeRoutes);
 
 // Thresholds come from lib/slaMonitor so the page and the notifications can
 // never disagree. Setting SLA_AT_RISK_DAYS used to move one and not the other.
@@ -1045,7 +1055,7 @@ router.patch('/applicants/:id', async (req, res) => {
 
     const existing = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ success: false, message: 'We could not find that person.' });
-    if (existing.role === 'ADMIN') {
+    if (existing.role === 'ADMIN' || existing.role === 'SUPERUSER') {
       return res.status(400).json({ success: false, message: 'Administrator accounts cannot be edited here' });
     }
 
@@ -1118,7 +1128,7 @@ router.delete('/applicants/:id', async (req, res) => {
     });
 
     if (!user) return res.status(404).json({ success: false, message: 'We could not find that person.' });
-    if (user.role === 'ADMIN') {
+    if (user.role === 'ADMIN' || user.role === 'SUPERUSER') {
       return res.status(400).json({ success: false, message: 'Administrator accounts cannot be deleted here' });
     }
     if (user.id === req.user.id) {

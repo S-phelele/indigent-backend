@@ -23,6 +23,42 @@ router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 
 const MAX_MEMBERS = 30;
 
+function loadApplication(mode) {
+  return async (req, res, next) => {
+    try {
+      const application = await prisma.application.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!application) {
+        return res.status(404).json({ success: false, message: 'We could not find that application.' });
+      }
+
+      const role = req.user?.role;
+      const privileged = role === 'ADMIN' || role === 'SUPERUSER';
+
+      if (!privileged) {
+        if (!access.canView(req.user, application)) {
+          return res.status(404).json({ success: false, message: 'We could not find that application.' });
+        }
+        if (mode === 'edit' && !access.canEdit(req.user, application)) {
+          return res.status(400).json({
+            success: false,
+            message: application.status === 'DRAFT'
+              ? 'You do not have permission to change this application.'
+              : 'This application has already been submitted, so it can no longer be changed.',
+          });
+        }
+      }
+
+      req.application = application;
+      next();
+    } catch (error) {
+      console.error('[household] load failed:', error);
+      res.status(500).json({ success: false, message: 'Something went wrong on our side. Please try again.' });
+    }
+  };
+}
+
 /** Age from a date of birth, or from an ID number, or as stated. */
 function resolveAge({ dateOfBirth, age, idNumber }) {
   if (dateOfBirth) {
@@ -81,7 +117,7 @@ async function syncCounts(applicationId, tx = prisma) {
 }
 
 /** The household on one application. */
-router.get('/:id/household', access.loadFor('view'), async (req, res) => {
+router.get('/:id/household', loadApplication('view'), async (req, res) => {
   try {
     const members = await prisma.householdMember.findMany({
       where: { applicationId: req.params.id },
@@ -108,7 +144,7 @@ router.get('/:id/household', access.loadFor('view'), async (req, res) => {
 });
 
 /** Add somebody. */
-router.post('/:id/household', access.loadFor('edit'), async (req, res) => {
+router.post('/:id/household', loadApplication('edit'), async (req, res) => {
   try {
     const { fullName, relationship, idNumber, dateOfBirth, age, monthlyIncome, isDependant, notes } = req.body || {};
 

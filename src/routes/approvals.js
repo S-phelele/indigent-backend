@@ -29,7 +29,7 @@ const respond = require('../lib/respond');
  * chain itself.
  */
 const router = express.Router();
-router.use(...protect, requireRole('VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR', 'ADMIN'), staffLimiter);
+router.use(...protect, requireRole('VERIFICATION_OFFICER', 'ASSESSMENT_OFFICER', 'SUPERVISOR', 'ADMIN', 'SUPERUSER'), staffLimiter);
 router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 
 const actorName = (u) => [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
@@ -40,7 +40,13 @@ const FULL_INCLUDE = {
   siteVisits: { orderBy: { attempt: 'asc' } },
   checks: { orderBy: { checkedAt: 'desc' } },
   approvalSteps: { orderBy: { sequence: 'asc' } },
-  documents: { select: { id: true, name: true, type: true, status: true, importance: true, requirementGroup: true } },
+  documents: {
+    select: {
+      id: true, name: true, type: true, status: true, importance: true,
+      requirementGroup: true, fileName: true,
+    },
+    orderBy: [{ importance: 'asc' }, { requirementGroup: 'asc' }, { createdAt: 'asc' }],
+  },
   user: { select: { id: true, email: true, firstName: true, lastName: true, cellNumber: true } },
   capturedBy: { select: { id: true, firstName: true, lastName: true, ward: true } },
 };
@@ -330,9 +336,11 @@ router.post('/applications/:id/decide', respond.handler(async (req, res) => {
     };
   }
 
-  const outcome = stageConfig.decides
-    ? (decision === 'APPROVE' ? 'APPROVED' : 'REJECTED')
-    : (decision === 'APPROVE' ? 'RECOMMEND_APPROVE' : 'RECOMMEND_REJECT');
+  // A refusal is final at every stage — the file does not move on.
+  // Only an approval recommendation advances to the next stage.
+  const outcome = decision === 'APPROVE'
+    ? (stageConfig.decides ? 'APPROVED' : 'RECOMMEND_APPROVE')
+    : 'REJECTED';
 
   const applicationChange = chain.advance(application, { outcome, stage: application.approvalStage });
 
@@ -425,11 +433,20 @@ router.post('/applications/:id/decide', respond.handler(async (req, res) => {
 
   await announce(updated, { stageConfig, outcome, notes, actor: req.user, step });
 
+  const declined = updated.status === 'DECLINED';
+  const approved = updated.status === 'APPROVED';
+  let message;
+  if (approved) {
+    message = 'Signed off as approved. The applicant has been told the outcome.';
+  } else if (declined) {
+    message = `${stageConfig.label}: application declined. The applicant has been told.`;
+  } else {
+    message = `${stageConfig.label} complete. The application has moved to ${chain.config(stageConfig.next)?.label.toLowerCase()}.`;
+  }
+
   res.json({
     success: true,
-    message: stageConfig.decides
-      ? `Signed off. The applicant has been told the outcome.`
-      : `${stageConfig.label} complete. The application has moved to ${chain.config(stageConfig.next)?.label.toLowerCase()}.`,
+    message,
     data: {
       ...updated,
       position: chain.position(updated, { steps: [...application.approvalSteps, step], user: req.user }),
@@ -534,7 +551,7 @@ router.post('/applications/:id/return', respond.handler(async (req, res) => {
  * and come back to it. The figures are recomputed on save rather than trusted
  * from the client — a means test the browser could edit is not a means test.
  */
-router.post('/applications/:id/assessment', requireRole('ASSESSMENT_OFFICER', 'ADMIN'), respond.handler(async (req, res) => {
+router.post('/applications/:id/assessment', requireRole('ASSESSMENT_OFFICER', 'ADMIN', 'SUPERUSER'), respond.handler(async (req, res) => {
   const application = await prisma.application.findUnique({
     where: { id: req.params.id },
     include: { checks: true, household: true, approvalSteps: true },
@@ -714,17 +731,18 @@ async function announce(application, { stageConfig, outcome, notes, actor, step 
       + `${notes ? ` — ${notes}` : ''}.`,
   });
 
-  // A decision reaches the applicant. A recommendation does not — telling
-  // somebody they have been recommended for approval and then refusing them is
-  // worse than telling them nothing.
-  if (stageConfig.decides) {
-    const approved = outcome === 'APPROVED';
+  // Final outcomes reach the applicant (approval at sign-off, or decline at any stage).
+  const isFinalApprove = outcome === 'APPROVED' || application.status === 'APPROVED';
+  const isFinalDecline = outcome === 'REJECTED' || outcome === 'RECOMMEND_REJECT' || application.status === 'DECLINED';
+
+  if (isFinalApprove || isFinalDecline) {
+    const approved = isFinalApprove && !isFinalDecline;
 
     await notify.toUser(application.userId, {
       type: approved ? notify.TYPE.APPLICATION_APPROVED : notify.TYPE.APPLICATION_DECLINED,
       title: approved ? 'Your application was approved' : 'Your application was not approved',
       body: approved
-        ? `Reference ${ref}. Your registration is valid until ${new Date(application.expiresAt).toLocaleDateString('en-ZA')}.`
+        ? `Reference ${ref}. Your registration is valid until ${application.expiresAt ? new Date(application.expiresAt).toLocaleDateString('en-ZA') : 'the date on your letter'}.`
         : `Reference ${ref}.${notes ? ` Reason: ${notes}` : ''}`,
       link: `/applications/${application.id}`,
       entityType: 'Application',
@@ -744,7 +762,7 @@ async function announce(application, { stageConfig, outcome, notes, actor, step 
     return;
   }
 
-  // Otherwise the next stage's officers are the ones who need to know.
+  // Approval recommendation only — notify the next stage's officers.
   const nextStage = chain.config(stageConfig.next);
   if (!nextStage) return;
 
@@ -752,14 +770,10 @@ async function announce(application, { stageConfig, outcome, notes, actor, step 
     ? notify.TYPE.AWAITING_ASSESSMENT
     : notify.TYPE.AWAITING_SIGNOFF;
 
-  // One query and one insert rather than a find-then-loop. `toStage` knows which
-  // roles work each stage and skips deactivated accounts, so the org chart lives
-  // in one place instead of being re-derived at every call site.
   await notify.toStage(stageConfig.next, {
     type,
     title: `An application is ready for ${nextStage.label.toLowerCase()}`,
-    body: `${ref} was passed on by ${actorName(actor)} with a recommendation to `
-      + `${outcome === 'RECOMMEND_APPROVE' ? 'approve' : 'refuse'}.`,
+    body: `${ref} was passed on by ${actorName(actor)} with a recommendation to approve.`,
     link: `/approvals/${application.id}`,
     entityType: 'Application',
     entityId: application.id,

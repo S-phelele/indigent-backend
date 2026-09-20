@@ -115,7 +115,7 @@ router.post('/:applicationId/upload', uploadLimiter, upload.single('file'), asyn
      * closed to both.
      */
     const isDraft = application.status === 'DRAFT';
-    const isAdmin = req.user.role === 'ADMIN';
+    const isAdmin = req.user.role === 'ADMIN' || req.user.role === 'SUPERUSER';
     const targetsExistingSlot = Boolean(documentId);
 
     let existingSlot = null;
@@ -333,7 +333,7 @@ router.delete('/:documentId', async (req, res) => {
 
     // Once submitted, the reviewer must see exactly what was declared. Without
     // this an applicant could strip evidence off an application already in the queue.
-    if (document.application.status !== 'DRAFT' && req.user.role !== 'ADMIN') {
+    if (document.application.status !== 'DRAFT' && req.user.role !== 'ADMIN' && req.user.role !== 'SUPERUSER') {
       return res.status(400).json({
         success: false,
         message: 'This application has been submitted, so its documents can no longer be changed.',

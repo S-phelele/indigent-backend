@@ -199,6 +199,8 @@ app.use('/api/privacy', privacyRoutes);
 // /staff route, so order is defensive rather than load-bearing.
 app.use('/api/admin/staff', staffRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/applications', householdRoutes);
+app.use('/api/admin/applications', incomeRoutes);
 app.use('/api/fieldwork', fieldworkRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);

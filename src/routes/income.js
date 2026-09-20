@@ -24,6 +24,42 @@ router.use(cache.invalidateOn(cache.TAGS.APPLICATIONS, cache.TAGS.ANALYTICS));
 /** More than this from one household is a mistake, not a declaration. */
 const MAX_SOURCES = 20;
 
+function loadApplication(mode) {
+  return async (req, res, next) => {
+    try {
+      const application = await prisma.application.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!application) {
+        return res.status(404).json({ success: false, message: 'We could not find that application.' });
+      }
+
+      const role = req.user?.role;
+      const privileged = role === 'ADMIN' || role === 'SUPERUSER';
+
+      if (!privileged) {
+        if (!access.canView(req.user, application)) {
+          return res.status(404).json({ success: false, message: 'We could not find that application.' });
+        }
+        if (mode === 'edit' && !access.canEdit(req.user, application)) {
+          return res.status(400).json({
+            success: false,
+            message: application.status === 'DRAFT'
+              ? 'You do not have permission to change this application.'
+              : 'This application has already been submitted, so it can no longer be changed.',
+          });
+        }
+      }
+
+      req.application = application;
+      next();
+    } catch (error) {
+      console.error('[income] load failed:', error);
+      res.status(500).json({ success: false, message: 'Something went wrong on our side. Please try again.' });
+    }
+  };
+}
+
 /**
  * Recompute everything derived from the rows.
  *
@@ -74,7 +110,7 @@ router.get('/income-types', (req, res) => {
   res.json({ success: true, data: income.TYPES });
 });
 
-router.get('/:id/income', access.loadFor('view'), async (req, res) => {
+router.get('/:id/income', loadApplication('view'), async (req, res) => {
   try {
     const sources = await prisma.incomeSource.findMany({
       where: { applicationId: req.params.id },
@@ -93,7 +129,7 @@ router.get('/:id/income', access.loadFor('view'), async (req, res) => {
   }
 });
 
-router.post('/:id/income', access.loadFor('edit'), async (req, res) => {
+router.post('/:id/income', loadApplication('edit'), async (req, res) => {
   try {
     const check = income.validate(req.body || {});
     if (!check.valid) return res.status(400).json({ success: false, message: check.reason });

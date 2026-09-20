@@ -41,7 +41,11 @@ const generateToken = (userId) =>
 const { passwordProblems } = require('../lib/credentials');
 
 /** In development the code is returned so the flow is testable without an SMS gateway. */
-const exposeDemoCode = () => process.env.NODE_ENV !== 'production';
+const exposeDemoCode = () => {
+  // Explicit opt-in for presentations on hosted non-prod, or any non-production NODE_ENV.
+  if (process.env.DEMO_OTP === '1' || process.env.DEMO_OTP === 'true') return true;
+  return process.env.NODE_ENV !== 'production';
+};
 
 // Register (Applicant)
 router.post('/register', registerLimiter, async (req, res) => {
