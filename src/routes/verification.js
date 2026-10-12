@@ -10,6 +10,9 @@ const geocode = require('../lib/geocode');
 const cache = require('../lib/cache');
 const { staffLimiter } = require('../lib/rateLimit');
 const names = require('../lib/names');
+const idCheck = require('../lib/idCheck');
+const verifyProvider = require('../lib/verifyProvider');
+const saId = require('../lib/saIdNumber');
 
 /**
  * The verification stage.
@@ -384,7 +387,7 @@ router.post('/applications/:id/checks', async (req, res) => {
     }
 
     const { source, outcome = 'INCONCLUSIVE', externalRef, findings, amountFound } = req.body || {};
-    const SOURCES = ['SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
+    const SOURCES = ['HOME_AFFAIRS', 'SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
     if (!SOURCES.includes(source)) {
       return res.status(400).json({ success: false, message: `Source must be one of: ${SOURCES.join(', ')}` });
     }
@@ -424,6 +427,118 @@ router.post('/applications/:id/checks', async (req, res) => {
   } catch (error) {
     console.error('verification check error:', error);
     res.status(500).json({ success: false, message: 'We could not save that check. Please try again.' });
+  }
+});
+
+/**
+ * Check the applicant's ID number against Home Affairs, through the provider.
+ *
+ * Each call can cost money, so three things guard it that the manual route does
+ * not need:
+ *
+ *  - the same consent and separation-of-duties gates as any other check;
+ *  - a refusal to buy the same answer twice. If this ID has already been checked
+ *    on this application, the existing result is returned (409) unless the
+ *    officer explicitly sends `force: true` — a second check is sometimes right
+ *    (the applicant corrected a typo) but never by accident;
+ *  - nothing is written when the provider fails, so a timeout leaves no row that
+ *    looks like an answer.
+ */
+router.post('/applications/:id/checks/home-affairs', async (req, res) => {
+  try {
+    const application = await prisma.application.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, idNumber: true, fullName: true, names: true, surname: true,
+        capturedById: true, consentDataMatching: true,
+        user: { select: { idNumber: true } },
+        checks: { where: { source: 'HOME_AFFAIRS', automated: true }, orderBy: { checkedAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!application) return res.status(404).json({ success: false, message: 'We could not find that application.' });
+
+    if (!application.consentDataMatching) {
+      return res.status(403).json({
+        success: false,
+        code: 'NO_CONSENT',
+        message: 'This applicant has not consented to external data checks. One cannot be run against them.',
+      });
+    }
+
+    const separation = verification.separationOfDuties(application, req.user);
+    if (!separation.ok) return res.status(403).json({ success: false, message: separation.reason });
+
+    const idNumber = String(application.idNumber || application.user?.idNumber || '').replace(/\s/g, '');
+    const idOk = saId.validate(idNumber);
+    if (!idOk.valid) {
+      return res.status(400).json({
+        success: false,
+        message: idNumber
+          ? `The ID number on this application cannot be checked: ${idOk.reason}.`
+          : 'This application has no ID number to check.',
+      });
+    }
+
+    const previous = application.checks[0];
+    if (previous && !req.body?.force) {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_CHECKED',
+        message: 'This application has already been checked against Home Affairs. Send force to check again; it will be charged again.',
+        data: previous,
+      });
+    }
+
+    const fullName = application.fullName || application.names || '';
+    const provider = verifyProvider.active();
+
+    let answer;
+    try {
+      answer = await provider.checkId({
+        idNumber,
+        fullName,
+        surname: application.surname || '',
+        // One key per application and ID, so a retry of the same click is never billed twice.
+        idempotencyKey: `ha-${application.id}-${idNumber}${req.body?.force ? `-${Date.now()}` : ''}`,
+      });
+    } catch (error) {
+      if (error instanceof verifyProvider.ProviderError) {
+        console.error('home affairs check failed:', error.message);
+        return res.status(502).json({ success: false, retryable: error.retryable, message: error.message });
+      }
+      throw error;
+    }
+
+    const { outcome, findings } = idCheck.evaluate(answer, { fullName, surname: application.surname });
+
+    const check = await prisma.verificationCheck.create({
+      data: {
+        applicationId: application.id,
+        source: 'HOME_AFFAIRS',
+        outcome,
+        externalRef: answer.ref || null,
+        findings,
+        automated: true,
+        provider: provider.name,
+        creditsUsed: answer.credits || null,
+        officerId: req.user.id,
+        officerName: officerName(req.user),
+      },
+    });
+
+    await verification.refresh(application.id);
+
+    await audit.record(req, {
+      action: audit.ACTIONS.VERIFICATION_CHECK,
+      entityType: 'Application',
+      entityId: application.id,
+      details: `HOME_AFFAIRS (${provider.name}): ${outcome} — ${findings}`,
+    });
+
+    res.status(201).json({ success: true, message: `Home Affairs check: ${outcome}`, data: check });
+  } catch (error) {
+    console.error('home affairs check error:', error);
+    res.status(500).json({ success: false, message: 'We could not run that check. Please try again.' });
   }
 });
 
