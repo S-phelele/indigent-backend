@@ -10,6 +10,7 @@ const saId = require('../lib/saIdNumber');
 const sms = require('../lib/sms');
 const smsTemplates = require('../lib/smsTemplates');
 const loginSecurity = require('../lib/loginSecurity');
+const directory = require('../lib/directoryService');
 const {
   loginLimiter,
   registerLimiter,
@@ -183,6 +184,14 @@ router.post('/register', registerLimiter, async (req, res) => {
   }
 });
 
+/**
+ * What the sign-in screen should offer. Public: it only says whether staff may
+ * use their Windows account, so the portal can word the form accordingly.
+ */
+router.get('/sign-in-options', (req, res) => {
+  res.json({ success: true, data: { directory: directory.enabled() } });
+});
+
 // Login
 router.post('/login', loginLimiter, async (req, res) => {
   try {
@@ -201,11 +210,82 @@ router.post('/login', loginLimiter, async (req, res) => {
     const identifier = String(email).trim().toLowerCase();
     const asCell = sms.normaliseNumber(identifier);
 
-    const user = await prisma.user.findFirst({
+    let user = await prisma.user.findFirst({
       where: asCell
         ? { OR: [{ email: identifier }, { cellNumber: asCell }] }
         : { email: identifier },
     });
+
+    /**
+     * Municipal staff sign in with their Windows (Active Directory) account.
+     *
+     * Tried when the directory is on and the name typed is either nobody local
+     * or a directory account. A *local* account — every resident, and the
+     * break-glass staff login — never reaches the directory: that is what stops
+     * a directory user from claiming a resident's identity, and what keeps staff
+     * able to sign in when the directory is down.
+     *
+     * The directory checks the password. It is never compared, hashed or stored
+     * here, and AD's own lockout and expiry rules apply, so the failure counter
+     * below is deliberately not used for these accounts.
+     */
+    let viaDirectory = false;
+    if (directory.enabled() && (!user || user.authSource === 'DIRECTORY')) {
+      const typed = String(email).trim();
+      const result = await directory.auth.signIn(typed, password);
+
+      if (!result.ok) {
+        const name = typed.slice(0, 60).replace(/[\r\n]/g, ' ');
+        if (result.reason === 'invalid') {
+          await audit.record(req, {
+            action: audit.ACTIONS.DIRECTORY_LOGIN_FAILED,
+            entityType: user ? 'User' : null,
+            entityId: user?.id ?? null,
+            details: `Directory sign-in failed for "${name}"`,
+            actor: user || undefined,
+          });
+          return res.status(401).json({ success: false, message: 'That email address or password is not correct.' });
+        }
+        if (result.reason === 'unavailable') {
+          return res.status(503).json({
+            success: false,
+            code: 'DIRECTORY_UNAVAILABLE',
+            message: 'We could not reach the municipal directory to check your sign-in. Try again shortly, or contact your system administrator.',
+          });
+        }
+        if (result.reason === 'disabled') {
+          return res.status(403).json({
+            success: false,
+            code: 'ACCOUNT_DEACTIVATED',
+            message: 'This account has been deactivated. Contact the municipal administrator.',
+          });
+        }
+        // no-role and conflict: the person proved who they are, so it is safe to say why they were refused.
+        await audit.record(req, {
+          action: audit.ACTIONS.DIRECTORY_LOGIN_FAILED,
+          details: `Directory sign-in refused for "${result.username || name}": ${result.reason}`,
+        });
+        return res.status(403).json({
+          success: false,
+          code: result.reason === 'no-role' ? 'DIRECTORY_NOT_AUTHORISED' : 'DIRECTORY_CONFLICT',
+          message: result.reason === 'no-role'
+            ? 'Your account is not in a group that may use the Indigent Register. Ask your system administrator to add you.'
+            : `${result.message} Contact your system administrator.`,
+        });
+      }
+
+      user = result.user;
+      viaDirectory = true;
+      if (result.created) {
+        await audit.record(req, {
+          action: audit.ACTIONS.DIRECTORY_PROVISION,
+          entityType: 'User',
+          entityId: user.id,
+          details: `Account created on first directory sign-in: ${user.email} as ${user.role}`,
+          actor: user,
+        });
+      }
+    }
 
     /**
      * A locked account is refused before the password is even compared.
@@ -214,7 +294,7 @@ router.post('/login', loginLimiter, async (req, res) => {
      * a locked account and learn from the timing which one was right, which is
      * most of what the lock exists to prevent.
      */
-    const lock = loginSecurity.lockState(user);
+    const lock = viaDirectory ? { locked: false } : loginSecurity.lockState(user);
     if (lock.locked) {
       await audit.record(req, {
         action: audit.ACTIONS.LOGIN_BLOCKED,
@@ -231,7 +311,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       });
     }
 
-    const passwordMatches = user ? await bcrypt.compare(password, user.password) : false;
+    const passwordMatches = viaDirectory ? true : user ? await bcrypt.compare(password, user.password) : false;
 
     if (!user || !passwordMatches) {
       /**
@@ -331,7 +411,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       action: audit.ACTIONS.LOGIN,
       entityType: 'User',
       entityId: user.id,
-      details: `${user.role} signed in`,
+      details: viaDirectory ? `${user.role} signed in through the directory` : `${user.role} signed in`,
       actor: user,
     });
 
@@ -349,6 +429,7 @@ router.post('/login', loginLimiter, async (req, res) => {
           idNumber: user.idNumber,
           isVerified: user.isVerified,
           ward: user.ward,
+          authSource: user.authSource,
           // The portals read this and send the holder straight to the change
           // password screen — a password that arrived by SMS is not a secret.
           mustChangePassword: user.mustChangePassword,
@@ -515,7 +596,8 @@ router.post('/forgot-password', passwordResetLimiter, async (req, res) => {
     if (!email) return res.status(400).json({ success: false, message: 'Please enter your email address.' });
 
     const user = await prisma.user.findUnique({ where: { email: String(email).trim() } });
-    if (!user || !user.cellNumber) return res.json(generic);
+    // A directory password is reset in Windows, not here. Answered like an unknown address.
+    if (!user || !user.cellNumber || user.authSource === 'DIRECTORY') return res.json(generic);
 
     const { code, expiresAt } = await otpService.issue(user.cellNumber, {
       userId: user.id,
@@ -555,7 +637,7 @@ router.post('/reset-password', passwordResetLimiter, async (req, res) => {
 
     const user = await prisma.user.findUnique({ where: { email: String(email).trim() } });
     // Same message for an unknown email as for a wrong code — no enumeration.
-    if (!user || !user.cellNumber) {
+    if (!user || !user.cellNumber || user.authSource === 'DIRECTORY') {
       return res.status(400).json({ success: false, message: 'That code is not valid or has expired.' });
     }
 
@@ -684,6 +766,14 @@ router.patch('/me', authenticate, async (req, res) => {
 // must not be enough to lock the real owner out.
 router.post('/change-password', authenticate, async (req, res) => {
   try {
+    if (req.user.authSource === 'DIRECTORY') {
+      return res.status(400).json({
+        success: false,
+        code: 'PASSWORD_MANAGED_BY_DIRECTORY',
+        message: 'Your password is your Windows account password. Change it the way you normally do at work; it cannot be changed here.',
+      });
+    }
+
     const { currentPassword, newPassword } = req.body || {};
 
     if (!currentPassword || !newPassword) {

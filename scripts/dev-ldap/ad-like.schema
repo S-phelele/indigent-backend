@@ -1,0 +1,21 @@
+# The handful of Active Directory attributes the Indigent Register reads, so an
+# ordinary OpenLDAP server can stand in for a domain controller during
+# development. These OIDs are in a private-use arc; they mean nothing to a real AD.
+attributetype ( 1.3.6.1.4.1.99999.1.1 NAME 'sAMAccountName'
+  EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch
+  SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )
+attributetype ( 1.3.6.1.4.1.99999.1.2 NAME 'userPrincipalName'
+  EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch
+  SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE )
+attributetype ( 1.3.6.1.4.1.99999.1.3 NAME 'userAccountControl'
+  EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE )
+attributetype ( 1.3.6.1.4.1.99999.1.4 NAME 'objectGUID'
+  EQUALITY octetStringMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 SINGLE-VALUE )
+attributetype ( 1.3.6.1.4.1.99999.1.5 NAME 'memberOf'
+  EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )
+attributetype ( 1.3.6.1.4.1.99999.1.6 NAME 'objectCategory'
+  EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )
+objectclass ( 1.3.6.1.4.1.99999.2.1 NAME 'adUser' AUXILIARY
+  MAY ( sAMAccountName $ userPrincipalName $ userAccountControl $ objectGUID $ memberOf $ objectCategory ) )
+# Real AD people carry objectClass 'user'; the provider filters on it to tell people from computers and groups.
+objectclass ( 1.3.6.1.4.1.99999.2.2 NAME 'user' AUXILIARY )

@@ -242,6 +242,16 @@ enum DocumentImportance {
   OPTIONAL
 }
 
+/// Where an account's credentials are held.
+enum AuthSource {
+  /// A password in this database. Residents, and the break-glass staff account.
+  LOCAL
+  /// The municipality's directory (Active Directory). The password never reaches
+  /// this system; the role comes from group membership; leaving the directory
+  /// group ends access.
+  DIRECTORY
+}
+
 model User {
   id            String   @id @default(uuid())
   email         String   @unique
@@ -302,6 +312,19 @@ model User {
   /// working for its full lifetime after the theft has been noticed and acted on.
   /// Compared against the token's issued-at claim on every request.
   passwordChangedAt   DateTime?
+
+  // --- Directory sign-in -------------------------------------------------------
+
+  authSource          AuthSource @default(LOCAL)
+  /// The directory's permanent identifier for this person (AD objectGUID). Never
+  /// the username or email, which are renamed; this is what stops a reused
+  /// username inheriting somebody else's history.
+  externalId          String?    @unique
+  /// The username they sign in with (sAMAccountName), kept so the scheduled sync
+  /// can find them again.
+  directoryUsername   String?
+  /// When the directory last confirmed this person still holds access.
+  directorySyncedAt   DateTime?
 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
