@@ -13,6 +13,7 @@ const names = require('../lib/names');
 const idCheck = require('../lib/idCheck');
 const verifyProvider = require('../lib/verifyProvider');
 const saId = require('../lib/saIdNumber');
+const spend = require('../lib/spend');
 
 /**
  * The verification stage.
@@ -387,7 +388,7 @@ router.post('/applications/:id/checks', async (req, res) => {
     }
 
     const { source, outcome = 'INCONCLUSIVE', externalRef, findings, amountFound } = req.body || {};
-    const SOURCES = ['HOME_AFFAIRS', 'SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
+    const SOURCES = ['HOME_AFFAIRS', 'BANK_ACCOUNT', 'SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
     if (!SOURCES.includes(source)) {
       return res.status(400).json({ success: false, message: `Source must be one of: ${SOURCES.join(', ')}` });
     }
@@ -431,28 +432,35 @@ router.post('/applications/:id/checks', async (req, res) => {
 });
 
 /**
- * Check the applicant's ID number against Home Affairs, through the provider.
+ * Automated checks: Home Affairs, bank account, deeds.
  *
- * Each call can cost money, so three things guard it that the manual route does
- * not need:
+ * All three buy an answer from a provider, so all three share the same guards,
+ * written once in `runAutomatedCheck` rather than three times where one copy
+ * would eventually be edited and the others not:
  *
- *  - the same consent and separation-of-duties gates as any other check;
- *  - a refusal to buy the same answer twice. If this ID has already been checked
- *    on this application, the existing result is returned (409) unless the
- *    officer explicitly sends `force: true` — a second check is sometimes right
- *    (the applicant corrected a typo) but never by accident;
+ *  - consent to external data checks, and separation of duties — exactly as for
+ *    a check typed in by hand;
+ *  - a daily credit ceiling (VERIFY_DAILY_CREDIT_LIMIT);
+ *  - a refusal to buy the same answer twice. If this source has already been
+ *    checked automatically on this application, the existing result comes back
+ *    (409) unless the officer sends `force: true` — a second check is sometimes
+ *    right (a typo was corrected) but never by accident;
  *  - nothing is written when the provider fails, so a timeout leaves no row that
  *    looks like an answer.
+ *
+ * Each endpoint supplies only what differs: which fields to read, what to ask,
+ * and how to judge the reply.
  */
-router.post('/applications/:id/checks/home-affairs', async (req, res) => {
+async function runAutomatedCheck(req, res, spec) {
   try {
     const application = await prisma.application.findUnique({
       where: { id: req.params.id },
       select: {
         id: true, idNumber: true, fullName: true, names: true, surname: true,
+        tenure: true, ownsOtherProperty: true,
         capturedById: true, consentDataMatching: true,
         user: { select: { idNumber: true } },
-        checks: { where: { source: 'HOME_AFFAIRS', automated: true }, orderBy: { checkedAt: 'desc' }, take: 1 },
+        checks: { where: { source: spec.source, automated: true }, orderBy: { checkedAt: 'desc' }, take: 1 },
       },
     });
     if (!application) return res.status(404).json({ success: false, message: 'We could not find that application.' });
@@ -479,42 +487,50 @@ router.post('/applications/:id/checks/home-affairs', async (req, res) => {
       });
     }
 
+    const fullName = application.fullName || application.names || '';
+    const prepared = spec.prepare ? spec.prepare(req.body || {}, { application, idNumber, fullName }) : {};
+    if (prepared.error) return res.status(400).json({ success: false, message: prepared.error });
+
     const previous = application.checks[0];
     if (previous && !req.body?.force) {
       return res.status(409).json({
         success: false,
         code: 'ALREADY_CHECKED',
-        message: 'This application has already been checked against Home Affairs. Send force to check again; it will be charged again.',
+        message: `This application has already had a ${spec.label} check. Send force to check again; it will be charged again.`,
         data: previous,
       });
     }
 
-    const fullName = application.fullName || application.names || '';
-    const provider = verifyProvider.active();
+    if (!spend.withinLimit(await spend.usedToday(prisma))) {
+      return res.status(429).json({
+        success: false,
+        code: 'SPEND_LIMIT',
+        message: 'The daily limit on automated checks has been reached. Try again tomorrow, or ask an administrator to raise it.',
+      });
+    }
 
+    const provider = verifyProvider.active();
     let answer;
     try {
-      answer = await provider.checkId({
-        idNumber,
-        fullName,
-        surname: application.surname || '',
-        // One key per application and ID, so a retry of the same click is never billed twice.
-        idempotencyKey: `ha-${application.id}-${idNumber}${req.body?.force ? `-${Date.now()}` : ''}`,
+      answer = await spec.call(provider, {
+        idNumber, fullName, surname: application.surname || '', ...prepared.input,
+        // One key per application, source and subject, so a retry of the same click is never billed twice.
+        idempotencyKey: `${spec.source}-${application.id}-${idNumber}${prepared.keyPart || ''}${req.body?.force ? `-${Date.now()}` : ''}`,
       });
     } catch (error) {
       if (error instanceof verifyProvider.ProviderError) {
-        console.error('home affairs check failed:', error.message);
+        console.error(`${spec.source} check failed:`, error.message);
         return res.status(502).json({ success: false, retryable: error.retryable, message: error.message });
       }
       throw error;
     }
 
-    const { outcome, findings } = idCheck.evaluate(answer, { fullName, surname: application.surname });
+    const { outcome, findings } = spec.evaluate(answer, { application, fullName, ...prepared.input });
 
     const check = await prisma.verificationCheck.create({
       data: {
         applicationId: application.id,
-        source: 'HOME_AFFAIRS',
+        source: spec.source,
         outcome,
         externalRef: answer.ref || null,
         findings,
@@ -532,15 +548,62 @@ router.post('/applications/:id/checks/home-affairs', async (req, res) => {
       action: audit.ACTIONS.VERIFICATION_CHECK,
       entityType: 'Application',
       entityId: application.id,
-      details: `HOME_AFFAIRS (${provider.name}): ${outcome} — ${findings}`,
+      details: `${spec.source} (${provider.name}): ${outcome} — ${findings}`,
     });
 
-    res.status(201).json({ success: true, message: `Home Affairs check: ${outcome}`, data: check });
+    res.status(201).json({ success: true, message: `${spec.label} check: ${outcome}`, data: check });
   } catch (error) {
-    console.error('home affairs check error:', error);
+    console.error(`${spec.source} check error:`, error);
     res.status(500).json({ success: false, message: 'We could not run that check. Please try again.' });
   }
-});
+}
+
+/** Is the ID number real, and does it belong to the name on the application? */
+router.post('/applications/:id/checks/home-affairs', (req, res) => runAutomatedCheck(req, res, {
+  source: 'HOME_AFFAIRS',
+  label: 'Home Affairs',
+  call: (provider, input) => provider.checkId(input),
+  evaluate: (answer, { fullName, application }) => idCheck.evaluate(answer, { fullName, surname: application.surname }),
+}));
+
+const ACCOUNT_TYPES = ['CURRENT', 'SAVINGS', 'TRANSMISSION'];
+
+/**
+ * Is there an open bank account, and is it held by this ID number?
+ *
+ * The account number comes from the officer in the request — read off the bank
+ * statement the applicant uploaded — and is sent to the provider and then
+ * forgotten. It is deliberately not a column: a register of account numbers is
+ * a breach waiting to happen, and the check only needs it for the one call. What
+ * is kept is the last four digits, in the finding, so the officer can see which
+ * account was checked.
+ */
+router.post('/applications/:id/checks/bank-account', (req, res) => runAutomatedCheck(req, res, {
+  source: 'BANK_ACCOUNT',
+  label: 'bank account',
+  prepare: (body) => {
+    const accountNumber = String(body.accountNumber || '').replace(/[\s-]/g, '');
+    const bankName = String(body.bankName || '').trim();
+    const accountType = String(body.accountType || 'CURRENT').toUpperCase();
+    if (!/^\d{6,16}$/.test(accountNumber)) return { error: 'Enter the account number using digits only (6 to 16 of them).' };
+    if (!bankName) return { error: 'Enter the name of the bank.' };
+    if (!ACCOUNT_TYPES.includes(accountType)) return { error: `Account type must be one of: ${ACCOUNT_TYPES.join(', ')}.` };
+    return { input: { accountNumber, bankName, accountType }, keyPart: `-${accountNumber.slice(-4)}` };
+  },
+  call: (provider, input) => provider.checkBank(input),
+  evaluate: (answer, { accountNumber }) => idCheck.evaluateBank(answer, { accountNumber }),
+}));
+
+/** Does the deeds register hold property under this ID number that was not declared? */
+router.post('/applications/:id/checks/property', (req, res) => runAutomatedCheck(req, res, {
+  source: 'DEEDS_OFFICE',
+  label: 'deeds',
+  call: (provider, input) => provider.checkProperty(input),
+  evaluate: (answer, { application }) => idCheck.evaluateProperty(answer, {
+    tenure: application.tenure,
+    ownsOtherProperty: application.ownsOtherProperty,
+  }),
+}));
 
 router.delete('/checks/:id', async (req, res) => {
   try {

@@ -55,6 +55,39 @@ async function checkIdMock({ idNumber, fullName, surname }) {
   return { found: true, deceased: false, firstNames: fullName, surname, credits: 0, ref: `mock-${Date.now()}` };
 }
 
+/**
+ * Bank account, by the last four digits of the account number:
+ *
+ *   0000 → no such account
+ *   1111 → account closed
+ *   2222 → open, but held by somebody else
+ *   anything else → open and held by this ID number
+ */
+async function checkBankMock({ accountNumber }) {
+  const tail = String(accountNumber).slice(-4);
+  const ref = `mock-${Date.now()}`;
+  if (tail === '0000') return { accountFound: false, credits: 0, ref };
+  if (tail === '1111') return { accountFound: true, accountOpen: false, credits: 0, ref };
+  if (tail === '2222') return { accountFound: true, accountOpen: true, idMatch: false, acceptsCredits: true, credits: 0, ref };
+  return { accountFound: true, accountOpen: true, idMatch: true, acceptsCredits: true, credits: 0, ref };
+}
+
+/**
+ * Registered property, by the last four digits of the ID number:
+ *
+ *   3333 → two properties
+ *   4444 → one property
+ *   anything else → none
+ */
+async function checkPropertyMock({ idNumber }) {
+  const tail = String(idNumber).slice(-4);
+  const ref = `mock-${Date.now()}`;
+  const erf = (n) => ({ description: `Erf ${n}, Mock Township, Registration Division JR` });
+  if (tail === '3333') return { properties: [erf(101), erf(202)], credits: 0, ref };
+  if (tail === '4444') return { properties: [erf(101)], credits: 0, ref };
+  return { properties: [], credits: 0, ref };
+}
+
 // ---------------------------------------------------------------------------
 // verifynow
 // ---------------------------------------------------------------------------
@@ -88,14 +121,20 @@ function normaliseVerifyNow(body) {
   };
 }
 
-async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
+/**
+ * One authenticated call to VerifyNow. Every check type goes through here, so
+ * the auth scheme, timeout and error mapping are written once.
+ *
+ * `reportType` and the path are the parts most likely to need correcting against
+ * the real API reference; both are settings, not code.
+ */
+async function callVerifyNow({ reportType, path, payload, idempotencyKey }) {
   const base = process.env.VERIFYNOW_BASE_URL;
   const key = process.env.VERIFYNOW_API_KEY;
   if (!base || !key) {
     throw new ProviderError('VERIFY_PROVIDER is "verifynow" but VERIFYNOW_BASE_URL or VERIFYNOW_API_KEY is not set');
   }
 
-  const path = process.env.VERIFYNOW_ID_PATH || '/verify';
   // Their pages show both a Bearer token and an x-api-key header. Set
   // VERIFYNOW_AUTH_HEADER=x-api-key to switch; Bearer is the default.
   const headerName = (process.env.VERIFYNOW_AUTH_HEADER || 'authorization').toLowerCase();
@@ -112,11 +151,7 @@ async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
         // A retry after a timeout must not be billed twice.
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       },
-      body: JSON.stringify({
-        reportType: process.env.VERIFYNOW_ID_REPORT_TYPE || 'home_affairs_id_photo',
-        idNumber,
-        consent: true,
-      }),
+      body: JSON.stringify({ reportType, consent: true, ...payload }),
       signal: controller.signal,
     });
 
@@ -125,9 +160,7 @@ async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
     if (res.status === 429 || res.status >= 500) throw new ProviderError(`The verification provider is unavailable (${res.status}).`, { retryable: true });
     if (!res.ok) throw new ProviderError(`The verification provider refused the request (${res.status}).`);
 
-    let body;
-    try { body = await res.json(); } catch { throw new ProviderError('The verification provider sent a response we could not read.'); }
-    return normaliseVerifyNow(body);
+    try { return await res.json(); } catch { throw new ProviderError('The verification provider sent a response we could not read.'); }
   } catch (error) {
     if (error instanceof ProviderError) throw error;
     if (error.name === 'AbortError') throw new ProviderError('The verification provider took too long to answer.', { retryable: true });
@@ -137,11 +170,73 @@ async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
   }
 }
 
+const tri = (v) => (v === true || v === false ? v : typeof v === 'string' ? ['yes', 'true', 'match', 'matched'].includes(v.toLowerCase()) ? true : ['no', 'false', 'mismatch', 'no_match'].includes(v.toLowerCase()) ? false : null : null);
+
+/** ASSUMED field names for the bank response — confirm against the sandbox. */
+function normaliseVerifyNowBank(body) {
+  const data = body?.data ?? body?.result ?? body ?? {};
+  const pick = (...keys) => keys.map((k) => data[k]).find((v) => v !== undefined && v !== null);
+  return {
+    accountFound: tri(pick('accountFound', 'account_found', 'accountExists', 'exists')),
+    accountOpen: tri(pick('accountOpen', 'account_open', 'accountActive', 'active')),
+    idMatch: tri(pick('idMatch', 'id_match', 'idNumberMatch', 'identityMatch')),
+    acceptsCredits: tri(pick('acceptsCredits', 'accepts_credits', 'acceptCredits')),
+    credits: Number(pick('creditsUsed', 'credits_used', 'credits') ?? 0) || null,
+    ref: pick('reference', 'requestId', 'request_id', 'id') ?? null,
+  };
+}
+
+/** ASSUMED field names for the property response — confirm against the sandbox. */
+function normaliseVerifyNowProperty(body) {
+  const data = body?.data ?? body?.result ?? body ?? {};
+  const pick = (...keys) => keys.map((k) => data[k]).find((v) => v !== undefined && v !== null);
+  const list = pick('properties', 'results', 'deeds') ?? [];
+  return {
+    properties: (Array.isArray(list) ? list : []).map((p) => ({
+      description: p.description || p.propertyDescription
+        || [p.erf && `Erf ${p.erf}`, p.township, p.registrationDivision].filter(Boolean).join(', ')
+        || p.lpiCode || null,
+    })),
+    credits: Number(pick('creditsUsed', 'credits_used', 'credits') ?? 0) || null,
+    ref: pick('reference', 'requestId', 'request_id', 'id') ?? null,
+  };
+}
+
+async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
+  const body = await callVerifyNow({
+    reportType: process.env.VERIFYNOW_ID_REPORT_TYPE || 'home_affairs_id_photo',
+    path: process.env.VERIFYNOW_ID_PATH || '/verify',
+    payload: { idNumber },
+    idempotencyKey,
+  });
+  return normaliseVerifyNow(body);
+}
+
+async function checkBankVerifyNow({ idNumber, accountNumber, bankName, accountType, idempotencyKey }) {
+  const body = await callVerifyNow({
+    reportType: process.env.VERIFYNOW_BANK_REPORT_TYPE || 'bank_account_verification',
+    path: process.env.VERIFYNOW_BANK_PATH || '/verify',
+    payload: { idNumber, accountNumber, bankName, accountType },
+    idempotencyKey,
+  });
+  return normaliseVerifyNowBank(body);
+}
+
+async function checkPropertyVerifyNow({ idNumber, idempotencyKey }) {
+  const body = await callVerifyNow({
+    reportType: process.env.VERIFYNOW_PROPERTY_REPORT_TYPE || 'property_search',
+    path: process.env.VERIFYNOW_PROPERTY_PATH || '/verify',
+    payload: { idNumber },
+    idempotencyKey,
+  });
+  return normaliseVerifyNowProperty(body);
+}
+
 // ---------------------------------------------------------------------------
 
 const PROVIDERS = {
-  mock: { name: 'mock', checkId: checkIdMock },
-  verifynow: { name: 'verifynow', checkId: checkIdVerifyNow },
+  mock: { name: 'mock', checkId: checkIdMock, checkBank: checkBankMock, checkProperty: checkPropertyMock },
+  verifynow: { name: 'verifynow', checkId: checkIdVerifyNow, checkBank: checkBankVerifyNow, checkProperty: checkPropertyVerifyNow },
 };
 
 function active() {
@@ -152,4 +247,4 @@ function active() {
   return provider;
 }
 
-module.exports = { active, ProviderError, normaliseVerifyNow, PROVIDER };
+module.exports = { active, ProviderError, normaliseVerifyNow, normaliseVerifyNowBank, normaliseVerifyNowProperty, PROVIDER };

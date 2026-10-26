@@ -159,6 +159,9 @@ enum CheckSource {
   /// verification provider. Confirms the ID number exists and belongs to the
   /// name given, and whether the holder is recorded as deceased.
   HOME_AFFAIRS
+  /// Whether a bank account exists, is open, and is held by the applicant, via a
+  /// verification provider. The account number itself is never stored.
+  BANK_ACCOUNT
   SARS
   UIF
   SASSA
