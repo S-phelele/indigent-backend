@@ -73,7 +73,7 @@ async function makeApplication(applicant, over = {}) {
   const a = await makeApplication(applicant, { idNumber: '8503124800081' });
   let r = await call('POST', url(a, 'home-affairs'), { token: verifier, body: {} });
   check('201 and a PASS for a matching ID', r.status === 201 && r.json.data.outcome === 'PASS', r.json?.message);
-  check('marked automated, with provider recorded', r.json?.data?.automated === true && r.json?.data?.provider === 'mock');
+  check('marked automated, with provider recorded', r.json?.data?.automated === true && /^(mock|verifynow-sandbox)$/.test(r.json?.data?.provider || ''), r.json?.data?.provider);
   r = await call('POST', url(a, 'home-affairs'), { token: verifier, body: {} });
   check('a repeat is refused with 409 ALREADY_CHECKED', r.status === 409 && r.json.code === 'ALREADY_CHECKED');
   r = await call('POST', url(a, 'home-affairs'), { token: verifier, body: { force: true } });
@@ -106,9 +106,18 @@ async function makeApplication(applicant, over = {}) {
   check('rejects a missing account number', r.status === 400);
   r = await call('POST', url(b, 'bank-account'), { token: verifier, body: { bankName: 'FNB', accountNumber: 'abc' } });
   check('rejects a non-numeric account number', r.status === 400);
+  r = await call('POST', url(b, 'bank-account'), { token: verifier, body: { bankName: 'FNB', accountNumber: '123456' } });
+  check('rejects an account number under 7 digits', r.status === 400);
+  r = await call('POST', url(b, 'bank-account'), { token: verifier, body: { bankName: 'Postbank', accountNumber: '62000009999' } });
+  check('a bank VerifyNow does not support (Postbank) is refused with advice', r.status === 400 && /list/.test(r.json.message), r.json?.message);
+  r = await call('POST', url(b, 'bank-account'), { token: verifier, body: { bankName: 'Postbank', bankBranchCode: '12', accountNumber: '62000009999' } });
+  check('a malformed branch code is refused', r.status === 400);
+  r = await call('GET', '/verification/banks', { token: verifier });
+  check('the bank list is served, with branch codes', r.status === 200 && r.json.data.some((x) => x.bankName === 'FNB' && x.bankCode === '250655') && r.json.data.some((x) => x.bankCode === '051001'));
   r = await call('POST', url(b, 'bank-account'), { token: verifier, body: { bankName: 'FNB', accountNumber: '62000009999' } });
   check('open account held by applicant is a PASS', r.status === 201 && r.json.data.outcome === 'PASS', r.json?.data?.findings);
   check('only the last four digits are kept', /9999/.test(r.json?.data?.findings || '') && !/62000009999/.test(JSON.stringify(r.json)));
+  check('a mock result is labelled as test data', /^\[Test data\]/.test(r.json?.data?.findings || '') && /test data/.test(r.json?.message || ''));
   const stored = await prisma.verificationCheck.findMany({ where: { applicationId: b.id } });
   const audits = await prisma.auditLog.findMany({ where: { entityId: b.id } });
   check('the full account number is nowhere in the database',

@@ -27,6 +27,7 @@ const privacyRoutes = require('./routes/privacy');
 const renewal = require('./lib/renewal');
 const retention = require('./lib/retention');
 const loginSecurity = require('./lib/loginSecurity');
+const verifyProvider = require('./lib/verifyProvider');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -89,6 +90,11 @@ if (process.env.JWT_EXPIRES_IN) {
     + `Sessions last SESSION_HOURS (currently ${loginSecurity.SESSION_HOURS}h). Remove it from your .env.`
   );
 }
+
+// --- Automated checks --------------------------------------------------------
+// Not fatal (a municipality may not use them), but a result built on test data
+// or the wrong mode should never be discovered from the screen.
+for (const warning of verifyProvider.warnings()) console.warn(`WARNING: automated checks — ${warning}`);
 
 // Ensure upload directory exists
 const uploadDir = process.env.UPLOAD_DIR || './uploads';

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const idCheck = require('../src/lib/idCheck');
-const { normaliseVerifyNow, ProviderError } = require('../src/lib/verifyProvider');
+const { ProviderError } = require('../src/lib/verifyProvider');
 
 /**
  * Pure rules only: how a Home Affairs answer becomes an outcome. No network, no
@@ -64,25 +64,6 @@ test('no answer at all is treated as no record', () => {
 // Provider response normalisation (assumed field names — see verifyProvider.js)
 // ---------------------------------------------------------------------------
 
-test('normaliseVerifyNow reads a found, living person', () => {
-  const r = normaliseVerifyNow({ data: { status: 'success', firstNames: 'Nomsa', surname: 'Dlamini', deceased: false, creditsUsed: 8, reference: 'abc' } });
-  assert.deepEqual(r, { found: true, firstNames: 'Nomsa', surname: 'Dlamini', deceased: false, credits: 8, ref: 'abc' });
-});
-
-test('normaliseVerifyNow reads a not-found response', () => {
-  assert.equal(normaliseVerifyNow({ status: 'not_found' }).found, false);
-});
-
-test('normaliseVerifyNow understands a deceased flag written as text', () => {
-  assert.equal(normaliseVerifyNow({ deceased: 'Yes' }).deceased, true);
-  assert.equal(normaliseVerifyNow({ deceased: 'No' }).deceased, false);
-});
-
-test('normaliseVerifyNow survives an empty body without throwing', () => {
-  assert.doesNotThrow(() => normaliseVerifyNow({}));
-  assert.doesNotThrow(() => normaliseVerifyNow(null));
-});
-
 test('ProviderError carries whether a retry is sensible', () => {
   assert.equal(new ProviderError('x', { retryable: true }).retryable, true);
   assert.equal(new ProviderError('x').retryable, false);
@@ -103,7 +84,6 @@ test('mock provider gives a distinct answer for each demonstrable outcome', asyn
 // ---------------------------------------------------------------------------
 
 const spend = require('../src/lib/spend');
-const { normaliseVerifyNowBank, normaliseVerifyNowProperty } = require('../src/lib/verifyProvider');
 
 test('bank: open account held by the applicant is a PASS and names only the last four digits', () => {
   const r = idCheck.evaluateBank({ accountFound: true, accountOpen: true, idMatch: true, acceptsCredits: true }, { accountNumber: '1234567890' });
@@ -192,18 +172,6 @@ test('property: no answer is treated as no properties', () => {
 // ---------------------------------------------------------------------------
 // Provider normalisers and the spend cap
 // ---------------------------------------------------------------------------
-
-test('normaliseVerifyNowBank reads yes/no and booleans, and leaves unknowns null', () => {
-  const r = normaliseVerifyNowBank({ data: { accountFound: true, accountOpen: 'Yes', idMatch: 'no_match', creditsUsed: 6, reference: 'r1' } });
-  assert.deepEqual(r, { accountFound: true, accountOpen: true, idMatch: false, acceptsCredits: null, credits: 6, ref: 'r1' });
-  assert.doesNotThrow(() => normaliseVerifyNowBank(null));
-});
-
-test('normaliseVerifyNowProperty builds a description from erf and township', () => {
-  const r = normaliseVerifyNowProperty({ properties: [{ erf: '55', township: 'Soshanguve', registrationDivision: 'JR' }, { description: 'Farm 3' }] });
-  assert.deepEqual(r.properties.map((p) => p.description), ['Erf 55, Soshanguve, JR', 'Farm 3']);
-  assert.deepEqual(normaliseVerifyNowProperty({}).properties, []);
-});
 
 test('spend cap: 0 means unlimited, otherwise refuses once the limit is reached', () => {
   assert.equal(spend.withinLimit(1_000_000, 0), true);

@@ -14,6 +14,8 @@ const idCheck = require('../lib/idCheck');
 const verifyProvider = require('../lib/verifyProvider');
 const saId = require('../lib/saIdNumber');
 const spend = require('../lib/spend');
+const banks = require('../lib/banks');
+const crypto = require('crypto');
 
 /**
  * The verification stage.
@@ -514,18 +516,27 @@ async function runAutomatedCheck(req, res, spec) {
     try {
       answer = await spec.call(provider, {
         idNumber, fullName, surname: application.surname || '', ...prepared.input,
-        // One key per application, source and subject, so a retry of the same click is never billed twice.
-        idempotencyKey: `${spec.source}-${application.id}-${idNumber}${prepared.keyPart || ''}${req.body?.force ? `-${Date.now()}` : ''}`,
+        // One key per application, source and subject, so a retry of the same click is never
+        // billed twice. Hashed: the key travels in a header, and is not a place for an ID number.
+        idempotencyKey: `indigent-${crypto.createHash('sha256')
+          .update(`${spec.source}|${application.id}|${idNumber}|${prepared.keyPart || ''}|${req.body?.force ? Date.now() : ''}`)
+          .digest('hex').slice(0, 48)}`,
       });
     } catch (error) {
       if (error instanceof verifyProvider.ProviderError) {
+        // The provider refused the *input* (a bad account number): the officer can correct it.
+        if (error.rejected) return res.status(422).json({ success: false, code: 'INPUT_REJECTED', message: error.message });
         console.error(`${spec.source} check failed:`, error.message);
         return res.status(502).json({ success: false, retryable: error.retryable, message: error.message });
       }
       throw error;
     }
 
-    const { outcome, findings } = spec.evaluate(answer, { application, fullName, ...prepared.input });
+    const evaluated = spec.evaluate(answer, { application, fullName, ...prepared.input });
+    const { outcome } = evaluated;
+    // A mock or sandbox answer is invented. Say so on the face of the result, so nobody
+    // reads it as a finding about a real household.
+    const findings = provider.testData ? `[Test data] ${evaluated.findings}` : evaluated.findings;
 
     const check = await prisma.verificationCheck.create({
       data: {
@@ -551,7 +562,11 @@ async function runAutomatedCheck(req, res, spec) {
       details: `${spec.source} (${provider.name}): ${outcome} — ${findings}`,
     });
 
-    res.status(201).json({ success: true, message: `${spec.label} check: ${outcome}`, data: check });
+    res.status(201).json({
+      success: true,
+      message: `${spec.label} check: ${outcome}${provider.testData ? ' (test data, not a real result)' : ''}`,
+      data: check,
+    });
   } catch (error) {
     console.error(`${spec.source} check error:`, error);
     res.status(500).json({ success: false, message: 'We could not run that check. Please try again.' });
@@ -566,7 +581,12 @@ router.post('/applications/:id/checks/home-affairs', (req, res) => runAutomatedC
   evaluate: (answer, { fullName, application }) => idCheck.evaluate(answer, { fullName, surname: application.surname }),
 }));
 
-const ACCOUNT_TYPES = ['CURRENT', 'SAVINGS', 'TRANSMISSION'];
+const ACCOUNT_TYPES = ['CURRENT', 'SAVINGS', 'TRANSMISSION', 'UNKNOWN'];
+
+/** The banks an account can be checked at, with their branch codes, for the officer's drop-down. */
+router.get('/banks', (req, res) => {
+  res.json({ success: true, data: banks.BANKS });
+});
 
 /**
  * Is there an open bank account, and is it held by this ID number?
@@ -577,18 +597,33 @@ const ACCOUNT_TYPES = ['CURRENT', 'SAVINGS', 'TRANSMISSION'];
  * a breach waiting to happen, and the check only needs it for the one call. What
  * is kept is the last four digits, in the finding, so the officer can see which
  * account was checked.
+ *
+ * The provider also needs the bank's six-digit branch code. Banks on its list
+ * use a universal code, filled in from the bank chosen; for one not on the list
+ * the officer may supply the code themselves.
  */
 router.post('/applications/:id/checks/bank-account', (req, res) => runAutomatedCheck(req, res, {
   source: 'BANK_ACCOUNT',
   label: 'bank account',
   prepare: (body) => {
     const accountNumber = String(body.accountNumber || '').replace(/[\s-]/g, '');
-    const bankName = String(body.bankName || '').trim();
-    const accountType = String(body.accountType || 'CURRENT').toUpperCase();
-    if (!/^\d{6,16}$/.test(accountNumber)) return { error: 'Enter the account number using digits only (6 to 16 of them).' };
-    if (!bankName) return { error: 'Enter the name of the bank.' };
+    const accountType = String(body.accountType || 'UNKNOWN').toUpperCase();
+    if (!/^\d{7,13}$/.test(accountNumber)) return { error: 'Enter the account number using digits only (7 to 13 of them).' };
     if (!ACCOUNT_TYPES.includes(accountType)) return { error: `Account type must be one of: ${ACCOUNT_TYPES.join(', ')}.` };
-    return { input: { accountNumber, bankName, accountType }, keyPart: `-${accountNumber.slice(-4)}` };
+
+    const bank = banks.find(body.bankName);
+    const explicit = String(body.bankBranchCode || '').trim();
+    if (explicit && !banks.isBranchCode(explicit)) return { error: 'A branch code is six digits, for example 250655.' };
+    if (!bank && !explicit) {
+      return { error: 'Choose the bank from the list. If it is not there, VerifyNow may not support it; enter its six-digit branch code to try anyway.' };
+    }
+    const bankName = bank ? bank.bankName : String(body.bankName || '').trim();
+    if (!bankName) return { error: 'Enter the name of the bank.' };
+
+    return {
+      input: { accountNumber, bankName, bankBranchCode: explicit || bank.bankCode, accountType },
+      keyPart: accountNumber.slice(-4),
+    };
   },
   call: (provider, input) => provider.checkBank(input),
   evaluate: (answer, { accountNumber }) => idCheck.evaluateBank(answer, { accountNumber }),

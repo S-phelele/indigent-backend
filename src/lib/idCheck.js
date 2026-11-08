@@ -62,6 +62,16 @@ function evaluate(result, declared = {}) {
     };
   }
 
+  // Checked before the deceased flag: if the record is not the one we asked about, a
+  // "deceased" on it says nothing about this applicant and must not fail them.
+  // The register answered, but not to the number we sent. Worth a person looking.
+  if (result.idMismatch === true) {
+    return {
+      outcome: 'INCONCLUSIVE',
+      findings: 'Home Affairs did not confirm that the ID number on its record matches the one submitted.',
+    };
+  }
+
   if (result.deceased === true) {
     return {
       outcome: 'FAIL',
