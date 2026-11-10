@@ -28,6 +28,7 @@ const renewal = require('./lib/renewal');
 const retention = require('./lib/retention');
 const loginSecurity = require('./lib/loginSecurity');
 const directory = require('./lib/directoryService');
+const verifyProvider = require('./lib/verifyProvider');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -103,6 +104,10 @@ if (directory.enabled()) {
   if (directoryProblems.length && process.env.NODE_ENV === 'production') process.exit(1);
   console.log(`[directory] sign-in through ${directory.providerName()} is ON`);
 }
+// --- Automated checks --------------------------------------------------------
+// Not fatal (a municipality may not use them), but a result built on test data
+// or the wrong mode should never be discovered from the screen.
+for (const warning of verifyProvider.warnings()) console.warn(`WARNING: automated checks — ${warning}`);
 
 // Ensure upload directory exists
 const uploadDir = process.env.UPLOAD_DIR || './uploads';

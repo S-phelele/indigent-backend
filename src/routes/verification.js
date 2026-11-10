@@ -10,6 +10,12 @@ const geocode = require('../lib/geocode');
 const cache = require('../lib/cache');
 const { staffLimiter } = require('../lib/rateLimit');
 const names = require('../lib/names');
+const idCheck = require('../lib/idCheck');
+const verifyProvider = require('../lib/verifyProvider');
+const saId = require('../lib/saIdNumber');
+const spend = require('../lib/spend');
+const banks = require('../lib/banks');
+const crypto = require('crypto');
 
 /**
  * The verification stage.
@@ -384,7 +390,7 @@ router.post('/applications/:id/checks', async (req, res) => {
     }
 
     const { source, outcome = 'INCONCLUSIVE', externalRef, findings, amountFound } = req.body || {};
-    const SOURCES = ['SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
+    const SOURCES = ['HOME_AFFAIRS', 'BANK_ACCOUNT', 'SARS', 'UIF', 'SASSA', 'CREDIT_BUREAU', 'DEEDS_OFFICE', 'MUNICIPAL_ACCOUNT', 'OTHER'];
     if (!SOURCES.includes(source)) {
       return res.status(400).json({ success: false, message: `Source must be one of: ${SOURCES.join(', ')}` });
     }
@@ -426,6 +432,213 @@ router.post('/applications/:id/checks', async (req, res) => {
     res.status(500).json({ success: false, message: 'We could not save that check. Please try again.' });
   }
 });
+
+/**
+ * Automated checks: Home Affairs, bank account, deeds.
+ *
+ * All three buy an answer from a provider, so all three share the same guards,
+ * written once in `runAutomatedCheck` rather than three times where one copy
+ * would eventually be edited and the others not:
+ *
+ *  - consent to external data checks, and separation of duties — exactly as for
+ *    a check typed in by hand;
+ *  - a daily credit ceiling (VERIFY_DAILY_CREDIT_LIMIT);
+ *  - a refusal to buy the same answer twice. If this source has already been
+ *    checked automatically on this application, the existing result comes back
+ *    (409) unless the officer sends `force: true` — a second check is sometimes
+ *    right (a typo was corrected) but never by accident;
+ *  - nothing is written when the provider fails, so a timeout leaves no row that
+ *    looks like an answer.
+ *
+ * Each endpoint supplies only what differs: which fields to read, what to ask,
+ * and how to judge the reply.
+ */
+async function runAutomatedCheck(req, res, spec) {
+  try {
+    const application = await prisma.application.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, idNumber: true, fullName: true, names: true, surname: true,
+        tenure: true, ownsOtherProperty: true,
+        capturedById: true, consentDataMatching: true,
+        user: { select: { idNumber: true } },
+        checks: { where: { source: spec.source, automated: true }, orderBy: { checkedAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!application) return res.status(404).json({ success: false, message: 'We could not find that application.' });
+
+    if (!application.consentDataMatching) {
+      return res.status(403).json({
+        success: false,
+        code: 'NO_CONSENT',
+        message: 'This applicant has not consented to external data checks. One cannot be run against them.',
+      });
+    }
+
+    const separation = verification.separationOfDuties(application, req.user);
+    if (!separation.ok) return res.status(403).json({ success: false, message: separation.reason });
+
+    const idNumber = String(application.idNumber || application.user?.idNumber || '').replace(/\s/g, '');
+    const idOk = saId.validate(idNumber);
+    if (!idOk.valid) {
+      return res.status(400).json({
+        success: false,
+        message: idNumber
+          ? `The ID number on this application cannot be checked: ${idOk.reason}.`
+          : 'This application has no ID number to check.',
+      });
+    }
+
+    const fullName = application.fullName || application.names || '';
+    const prepared = spec.prepare ? spec.prepare(req.body || {}, { application, idNumber, fullName }) : {};
+    if (prepared.error) return res.status(400).json({ success: false, message: prepared.error });
+
+    const previous = application.checks[0];
+    if (previous && !req.body?.force) {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_CHECKED',
+        message: `This application has already had a ${spec.label} check. Send force to check again; it will be charged again.`,
+        data: previous,
+      });
+    }
+
+    if (!spend.withinLimit(await spend.usedToday(prisma))) {
+      return res.status(429).json({
+        success: false,
+        code: 'SPEND_LIMIT',
+        message: 'The daily limit on automated checks has been reached. Try again tomorrow, or ask an administrator to raise it.',
+      });
+    }
+
+    const provider = verifyProvider.active();
+    let answer;
+    try {
+      answer = await spec.call(provider, {
+        idNumber, fullName, surname: application.surname || '', ...prepared.input,
+        // One key per application, source and subject, so a retry of the same click is never
+        // billed twice. Hashed: the key travels in a header, and is not a place for an ID number.
+        idempotencyKey: `indigent-${crypto.createHash('sha256')
+          .update(`${spec.source}|${application.id}|${idNumber}|${prepared.keyPart || ''}|${req.body?.force ? Date.now() : ''}`)
+          .digest('hex').slice(0, 48)}`,
+      });
+    } catch (error) {
+      if (error instanceof verifyProvider.ProviderError) {
+        // The provider refused the *input* (a bad account number): the officer can correct it.
+        if (error.rejected) return res.status(422).json({ success: false, code: 'INPUT_REJECTED', message: error.message });
+        console.error(`${spec.source} check failed:`, error.message);
+        return res.status(502).json({ success: false, retryable: error.retryable, message: error.message });
+      }
+      throw error;
+    }
+
+    const evaluated = spec.evaluate(answer, { application, fullName, ...prepared.input });
+    const { outcome } = evaluated;
+    // A mock or sandbox answer is invented. Say so on the face of the result, so nobody
+    // reads it as a finding about a real household.
+    const findings = provider.testData ? `[Test data] ${evaluated.findings}` : evaluated.findings;
+
+    const check = await prisma.verificationCheck.create({
+      data: {
+        applicationId: application.id,
+        source: spec.source,
+        outcome,
+        externalRef: answer.ref || null,
+        findings,
+        automated: true,
+        provider: provider.name,
+        creditsUsed: answer.credits || null,
+        officerId: req.user.id,
+        officerName: officerName(req.user),
+      },
+    });
+
+    await verification.refresh(application.id);
+
+    await audit.record(req, {
+      action: audit.ACTIONS.VERIFICATION_CHECK,
+      entityType: 'Application',
+      entityId: application.id,
+      details: `${spec.source} (${provider.name}): ${outcome} — ${findings}`,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `${spec.label} check: ${outcome}${provider.testData ? ' (test data, not a real result)' : ''}`,
+      data: check,
+    });
+  } catch (error) {
+    console.error(`${spec.source} check error:`, error);
+    res.status(500).json({ success: false, message: 'We could not run that check. Please try again.' });
+  }
+}
+
+/** Is the ID number real, and does it belong to the name on the application? */
+router.post('/applications/:id/checks/home-affairs', (req, res) => runAutomatedCheck(req, res, {
+  source: 'HOME_AFFAIRS',
+  label: 'Home Affairs',
+  call: (provider, input) => provider.checkId(input),
+  evaluate: (answer, { fullName, application }) => idCheck.evaluate(answer, { fullName, surname: application.surname }),
+}));
+
+const ACCOUNT_TYPES = ['CURRENT', 'SAVINGS', 'TRANSMISSION', 'UNKNOWN'];
+
+/** The banks an account can be checked at, with their branch codes, for the officer's drop-down. */
+router.get('/banks', (req, res) => {
+  res.json({ success: true, data: banks.BANKS });
+});
+
+/**
+ * Is there an open bank account, and is it held by this ID number?
+ *
+ * The account number comes from the officer in the request — read off the bank
+ * statement the applicant uploaded — and is sent to the provider and then
+ * forgotten. It is deliberately not a column: a register of account numbers is
+ * a breach waiting to happen, and the check only needs it for the one call. What
+ * is kept is the last four digits, in the finding, so the officer can see which
+ * account was checked.
+ *
+ * The provider also needs the bank's six-digit branch code. Banks on its list
+ * use a universal code, filled in from the bank chosen; for one not on the list
+ * the officer may supply the code themselves.
+ */
+router.post('/applications/:id/checks/bank-account', (req, res) => runAutomatedCheck(req, res, {
+  source: 'BANK_ACCOUNT',
+  label: 'bank account',
+  prepare: (body) => {
+    const accountNumber = String(body.accountNumber || '').replace(/[\s-]/g, '');
+    const accountType = String(body.accountType || 'UNKNOWN').toUpperCase();
+    if (!/^\d{7,13}$/.test(accountNumber)) return { error: 'Enter the account number using digits only (7 to 13 of them).' };
+    if (!ACCOUNT_TYPES.includes(accountType)) return { error: `Account type must be one of: ${ACCOUNT_TYPES.join(', ')}.` };
+
+    const bank = banks.find(body.bankName);
+    const explicit = String(body.bankBranchCode || '').trim();
+    if (explicit && !banks.isBranchCode(explicit)) return { error: 'A branch code is six digits, for example 250655.' };
+    if (!bank && !explicit) {
+      return { error: 'Choose the bank from the list. If it is not there, VerifyNow may not support it; enter its six-digit branch code to try anyway.' };
+    }
+    const bankName = bank ? bank.bankName : String(body.bankName || '').trim();
+    if (!bankName) return { error: 'Enter the name of the bank.' };
+
+    return {
+      input: { accountNumber, bankName, bankBranchCode: explicit || bank.bankCode, accountType },
+      keyPart: accountNumber.slice(-4),
+    };
+  },
+  call: (provider, input) => provider.checkBank(input),
+  evaluate: (answer, { accountNumber }) => idCheck.evaluateBank(answer, { accountNumber }),
+}));
+
+/** Does the deeds register hold property under this ID number that was not declared? */
+router.post('/applications/:id/checks/property', (req, res) => runAutomatedCheck(req, res, {
+  source: 'DEEDS_OFFICE',
+  label: 'deeds',
+  call: (provider, input) => provider.checkProperty(input),
+  evaluate: (answer, { application }) => idCheck.evaluateProperty(answer, {
+    tenure: application.tenure,
+    ownsOtherProperty: application.ownsOtherProperty,
+  }),
+}));
 
 router.delete('/checks/:id', async (req, res) => {
   try {

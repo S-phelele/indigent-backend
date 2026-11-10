@@ -135,11 +135,14 @@ const PROCESSING_REGISTER = [
   },
   {
     category: 'Verification checks',
-    items: ['Results of checks against SARS, UIF, SASSA, credit bureaux and the deeds office'],
+    items: [
+      'Results of checks against Home Affairs, SARS, UIF, SASSA, credit bureaux and the deeds office',
+      'Whether a bank account you name is open and held by your ID number (the account number is sent for the check and is not kept)',
+    ],
     purpose: 'To confirm the declared income and property are accurate.',
     basis: 'POPIA s11(1)(a) — your consent, given when you applied. Verification cannot proceed without it.',
     voluntary: true,
-    recipients: ['The organisation the check is run against'],
+    recipients: ['The organisation the check is run against', 'A verification service provider acting for the municipality'],
   },
 ];
 

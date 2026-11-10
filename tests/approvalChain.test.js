@@ -243,9 +243,10 @@ test('history is returned in the order it happened', () => {
 test('every step describes itself in words a person can read', () => {
   const cases = [
     ['RECOMMEND_APPROVE', /recommended approval/],
-    ['RECOMMEND_REJECT', /recommended refusal/],
+    // A refusal at any stage is final (see advance()), so it reads as a decision, not a recommendation.
+    ['RECOMMEND_REJECT', /declined the application at assessment/],
     ['APPROVED', /signed the application off as approved/],
-    ['REJECTED', /signed the application off as declined/],
+    ['REJECTED', /declined the application at assessment/],
   ];
   for (const [outcome, pattern] of cases) {
     const text = chain.describeStep({ stage: 'ASSESSMENT', outcome, actorName: 'T. Dlamini' });
