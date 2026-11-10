@@ -49,9 +49,9 @@ const DOC_PROPERTY = {
 
 // --- Parsers ---------------------------------------------------------------
 
-test('ID: the 3-credit real-time report gives names, deceased status and the request reference', () => {
+test('ID: the real-time report gives names, deceased status and the request reference (10 credits on the pricing page)', () => {
   const r = vp.normaliseVerifyNow(DOC_ID_REALTIME);
-  assert.deepEqual(r, { found: true, firstNames: 'JOHN', surname: 'DOE', deceased: true, idMismatch: false, credits: 3, ref: 'unique-request-id' });
+  assert.deepEqual(r, { found: true, firstNames: 'JOHN', surname: 'DOE', deceased: true, idMismatch: false, credits: 10, ref: 'unique-request-id' });
 });
 
 test('ID: the 1-credit said_verification report has names but no deceased flag — unknown, never "alive"', () => {
@@ -173,8 +173,8 @@ async function withFake(handler, env, fn) {
 
 const vn = () => vp.named('verifynow');
 
-test('wire: ID check uses x-api-key (not Bearer), /verify, the right reportType, and mode sandbox by default', async () => {
-  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: undefined }, async (f) => {
+test('wire: the real-time ID report uses x-api-key (not Bearer), /verify, its reportType, and mode sandbox by default', async () => {
+  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: undefined, VERIFYNOW_ID_REPORT_TYPE: 'home_affairs_real_time_idv' }, async (f) => {
     const r = await vn().checkId({ idNumber: '7905011111118', idempotencyKey: 'indigent-abc12345' });
     assert.equal(r.surname, 'DOE');
     const req = f.seen[0];
@@ -190,13 +190,13 @@ test('wire: ID check uses x-api-key (not Bearer), /verify, the right reportType,
 });
 
 test('wire: production happens only when VERIFYNOW_MODE=production is set exactly', async () => {
-  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: 'production' }, async (f) => {
+  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: 'production', VERIFYNOW_ID_REPORT_TYPE: 'home_affairs_real_time_idv' }, async (f) => {
     await vn().checkId({ idNumber: '7905011111118' });
     assert.equal(f.seen[0].body.mode, 'production');
     assert.equal(vn().name, 'verifynow-production');
     assert.equal(vn().testData, false);
   });
-  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: 'prod' }, async (f) => {
+  await withFake(() => ({ status: 200, body: DOC_ID_REALTIME }), { VERIFYNOW_MODE: 'prod', VERIFYNOW_ID_REPORT_TYPE: 'home_affairs_real_time_idv' }, async (f) => {
     await vn().checkId({ idNumber: '7905011111118' });
     assert.equal(f.seen[0].body.mode, 'sandbox', 'a typo must not spend money');
   });
@@ -302,4 +302,104 @@ test('boot warnings: sandbox mode and a missing key are called out; mock in prod
 test('a deceased flag on a record that does not match the ID is not held against the applicant', () => {
   const r = idCheck.evaluate({ found: true, deceased: true, idMismatch: true, firstNames: 'JOHN', surname: 'DOE' }, { fullName: 'John', surname: 'Doe' });
   assert.equal(r.outcome, 'INCONCLUSIVE');
+});
+
+
+// --- Consumer/Person Trace Lite: "Alive/Deceased Status (Standard)", the default ID check -------------------
+
+const DOC_TRACE_LITE = {
+  success: true, requestId: 'unique-request-id', user_id: '...', remaining_credits: 497, service: 'consumer-trace-lite', mode: 'production',
+  input: { idNumber: '9103015257085' },
+  result: [[{
+    IDNumber: '9103015257085', Surname: 'JOHNSON', FirstNames: 'JAMES', DOB: '1990-01-01', Deceased: 'No', MaritalStatus: 'SINGLE',
+    Cell1: '0730855852', WorkPhone: '0312554877', Email1: 'test@example.com', Physical_Address_1: '21 JUMP STREET', Postal_Code: '7340',
+  }]],
+};
+
+test('trace lite: reads names and the deceased flag, and nothing else', () => {
+  const r = vp.normaliseTraceLite(DOC_TRACE_LITE, '9103015257085');
+  assert.deepEqual(r, { found: true, firstNames: 'JAMES', surname: 'JOHNSON', deceased: false, idMismatch: false, credits: 3, ref: 'unique-request-id' });
+});
+
+test('trace lite: the cell number, email, work phone and address never leave the parser', () => {
+  const out = JSON.stringify(vp.normaliseTraceLite(DOC_TRACE_LITE, '9103015257085'));
+  assert.doesNotMatch(out, /0730855852|0312554877|test@example\.com|JUMP STREET|7340/);
+});
+
+test('trace lite: "Yes" is deceased and is a FAIL', () => {
+  const body = JSON.parse(JSON.stringify(DOC_TRACE_LITE));
+  body.result[0][0].Deceased = 'Yes';
+  const r = vp.normaliseTraceLite(body, '9103015257085');
+  assert.equal(r.deceased, true);
+  assert.equal(idCheck.evaluate(r, { fullName: 'James', surname: 'Johnson' }).outcome, 'FAIL');
+});
+
+test('trace lite: a row for a different ID number is flagged, and a missing flag is unknown, not alive', () => {
+  const body = JSON.parse(JSON.stringify(DOC_TRACE_LITE));
+  body.result[0][0].IDNumber = '8001015009087';
+  delete body.result[0][0].Deceased;
+  const r = vp.normaliseTraceLite(body, '9103015257085');
+  assert.equal(r.idMismatch, true);
+  assert.equal(r.deceased, null);
+});
+
+test('trace lite: an empty result is "no answer", not "no such person"', () => {
+  for (const empty of [{ result: [] }, { result: [[]] }]) {
+    assert.throws(() => vp.normaliseTraceLite({ success: true, ...empty }, '9103015257085'), (e) => e instanceof vp.ProviderError && /returned nothing/.test(e.message) && !e.retryable);
+  }
+  assert.throws(() => vp.normaliseTraceLite({}, '9103015257085'), /could not understand/);
+});
+
+test('trace lite is the default ID check: /consumer-trace-lite, body is the ID number and mode only', async () => {
+  await withFake(() => ({ status: 200, body: DOC_TRACE_LITE }), { VERIFYNOW_ID_REPORT_TYPE: undefined }, async (f) => {
+    const r = await vn().checkId({ idNumber: '9103015257085', idempotencyKey: 'indigent-trace-01' });
+    assert.equal(r.surname, 'JOHNSON');
+    const req = f.seen[0];
+    assert.equal(req.url, '/api/external/consumer-trace-lite');
+    assert.deepEqual(req.body, { idNumber: '9103015257085', mode: 'sandbox' });
+    assert.equal(req.headers['x-api-key'], 'vn_test_key');
+  });
+});
+
+test('an unknown VERIFYNOW_ID_REPORT_TYPE is refused, naming the choices, before anything is sent', async () => {
+  await withFake(() => ({ status: 200, body: {} }), { VERIFYNOW_ID_REPORT_TYPE: 'id_plus_photo' }, async (f) => {
+    await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), /consumer_trace_lite, said_verification, home_affairs_real_time_idv/);
+    assert.equal(f.seen.length, 0);
+  });
+});
+
+test('credits: each ID product is entered at the price on their pricing page and product guide', async () => {
+  const credits = async (type, body) => withFakeResult(type, body);
+  async function withFakeResult(type, body) {
+    let out;
+    await withFake(() => ({ status: 200, body }), { VERIFYNOW_ID_REPORT_TYPE: type }, async () => { out = await vn().checkId({ idNumber: '9103015257085' }); });
+    return out.credits;
+  }
+  assert.equal(await credits('consumer_trace_lite', DOC_TRACE_LITE), 3);
+  assert.equal(await credits('said_verification', DOC_SAID), 1);
+  assert.equal(await credits('home_affairs_real_time_idv', DOC_ID_REALTIME), 10);
+});
+
+test('credits can be overridden from the environment when a real call shows a different charge', async () => {
+  await withFake(() => ({ status: 200, body: DOC_TRACE_LITE }), { VERIFYNOW_CREDITS_CONSUMER_TRACE_LITE: '5' }, async () => {
+    assert.equal((await vn().checkId({ idNumber: '9103015257085' })).credits, 5);
+  });
+});
+
+test('only problems with us are fatal to a batch: a bad key, an empty balance, a bad setting', async () => {
+  for (const [status, expectFatal] of [[401, true], [402, true], [403, true], [429, false], [500, false], [400, false]]) {
+    await withFake(() => ({ status, body: { error: 'x' } }), {}, async () => {
+      await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === expectFatal, `status ${status}`);
+    });
+  }
+  await withFake(() => ({ status: 200, body: {} }), { VERIFYNOW_API_KEY: undefined }, async () => {
+    await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === true);
+  });
+  await withFake(() => ({ status: 200, body: {} }), { VERIFYNOW_ID_REPORT_TYPE: 'nonsense' }, async () => {
+    await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === true);
+  });
+});
+
+test('"no answer" for one person is not fatal, so a batch carries on past it', () => {
+  assert.throws(() => vp.normaliseTraceLite({ success: true, result: [] }, '9103015257085'), (e) => e.fatal === false && e.retryable === false);
 });

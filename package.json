@@ -11,6 +11,7 @@
     "verify:audit": "node scripts/verify-audit-immutability.js",
     "verify:workflow": "node scripts/verify-workflow.js",
     "verify:checks": "node scripts/verify-automated-checks.js",
+    "verifynow:smoke": "node scripts/verifynow-smoke.js",
     "demo:seed": "node scripts/seed-demo-staff.js",
     "demo:remove": "node scripts/seed-demo-staff.js --remove",
     "db:generate": "prisma generate",
