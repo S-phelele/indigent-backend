@@ -54,12 +54,16 @@ class ProviderError extends Error {
    * `retryable`  — trying the same thing again later may work.
    * `rejected`   — the provider refused the *input* (a bad account number, say);
    *                the officer can correct it. It says nothing about the applicant.
+   * `fatal`      — the problem is with us, not with this one request: a missing or
+   *                refused API key, an empty balance, a bad setting. Every further
+   *                request would fail the same way, so a batch must stop.
    */
-  constructor(message, { retryable = false, rejected = false } = {}) {
+  constructor(message, { retryable = false, rejected = false, fatal = false } = {}) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = retryable;
     this.rejected = rejected;
+    this.fatal = fatal;
   }
 }
 
@@ -166,7 +170,7 @@ const creditsFor = (key) => {
  */
 async function callVerifyNow({ path, payload, idempotencyKey }) {
   const key = process.env.VERIFYNOW_API_KEY;
-  if (!key) throw new ProviderError('VERIFY_PROVIDER is "verifynow" but VERIFYNOW_API_KEY is not set');
+  if (!key) throw new ProviderError('VERIFY_PROVIDER is "verifynow" but VERIFYNOW_API_KEY is not set', { fatal: true });
   const base = (process.env.VERIFYNOW_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
 
   const controller = new AbortController();
@@ -196,8 +200,8 @@ async function callVerifyNow({ path, payload, idempotencyKey }) {
     }
     if (res.status === 202) throw new ProviderError('The verification provider is still processing this request. Try again in a moment.', { retryable: true });
     if (res.status === 400) throw new ProviderError(`The verification provider rejected the request${detail ? `: ${detail}` : ''}.`, { rejected: true });
-    if (res.status === 401 || res.status === 403) throw new ProviderError('The verification provider rejected our API key.');
-    if (res.status === 402) throw new ProviderError('The verification account is out of credits.');
+    if (res.status === 401 || res.status === 403) throw new ProviderError('The verification provider rejected our API key.', { fatal: true });
+    if (res.status === 402) throw new ProviderError('The verification account is out of credits.', { fatal: true });
     if (res.status === 409) {
       if (code === 'REQUEST_IN_PROGRESS') throw new ProviderError('This check is already in progress. Try again in a moment.', { retryable: true });
       throw new ProviderError('The verification provider saw this request key used for a different request.');
@@ -237,13 +241,13 @@ function shapeOf(value, depth = 0) {
  */
 async function balance() {
   const key = process.env.VERIFYNOW_API_KEY;
-  if (!key) throw new ProviderError('VERIFYNOW_API_KEY is not set');
+  if (!key) throw new ProviderError('VERIFYNOW_API_KEY is not set', { fatal: true });
   const base = (process.env.VERIFYNOW_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const res = await fetch(`${base}/my_credits`, { headers: { 'x-api-key': key }, signal: controller.signal });
-    if (res.status === 401 || res.status === 403) throw new ProviderError('The verification provider rejected our API key.');
+    if (res.status === 401 || res.status === 403) throw new ProviderError('The verification provider rejected our API key.', { fatal: true });
     if (!res.ok) throw new ProviderError(`Could not read the credit balance (${res.status}).`);
     const body = await res.json();
     const credits = Number(body?.Result?.credits ?? body?.credits);
@@ -432,7 +436,7 @@ const ID_REPORTS = {
 const idReportType = () => {
   const wanted = process.env.VERIFYNOW_ID_REPORT_TYPE || 'consumer_trace_lite';
   if (!ID_REPORTS[wanted]) {
-    throw new ProviderError(`VERIFYNOW_ID_REPORT_TYPE "${wanted}" is not one of: ${Object.keys(ID_REPORTS).join(', ')}.`);
+    throw new ProviderError(`VERIFYNOW_ID_REPORT_TYPE "${wanted}" is not one of: ${Object.keys(ID_REPORTS).join(', ')}.`, { fatal: true });
   }
   return wanted;
 };

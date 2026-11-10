@@ -385,3 +385,21 @@ test('credits can be overridden from the environment when a real call shows a di
     assert.equal((await vn().checkId({ idNumber: '9103015257085' })).credits, 5);
   });
 });
+
+test('only problems with us are fatal to a batch: a bad key, an empty balance, a bad setting', async () => {
+  for (const [status, expectFatal] of [[401, true], [402, true], [403, true], [429, false], [500, false], [400, false]]) {
+    await withFake(() => ({ status, body: { error: 'x' } }), {}, async () => {
+      await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === expectFatal, `status ${status}`);
+    });
+  }
+  await withFake(() => ({ status: 200, body: {} }), { VERIFYNOW_API_KEY: undefined }, async () => {
+    await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === true);
+  });
+  await withFake(() => ({ status: 200, body: {} }), { VERIFYNOW_ID_REPORT_TYPE: 'nonsense' }, async () => {
+    await assert.rejects(() => vn().checkId({ idNumber: '9103015257085' }), (e) => e.fatal === true);
+  });
+});
+
+test('"no answer" for one person is not fatal, so a batch carries on past it', () => {
+  assert.throws(() => vp.normaliseTraceLite({ success: true, result: [] }, '9103015257085'), (e) => e.fatal === false && e.retryable === false);
+});

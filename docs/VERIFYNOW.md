@@ -178,6 +178,32 @@ before and after, the credits really charged, the outcome, and whether a decease
 back. This is the step that settles the price disagreements above. If a charge differs from
 the table, set `VERIFYNOW_CREDITS_*` to the real figure.
 
+### 3b. A quick real-data run on 5 to 10 people
+Instead of one person, run a short list. Use **only people who have agreed** (colleagues, or yourself
+and family), and keep the list on your own machine: it holds real ID numbers.
+
+1. Copy `scripts/verifynow-people.example.csv` to a name ending **`.local.csv`** (git ignores those)
+   and replace the made-up rows. Columns: `id,first,surname,bank,account,type,property`.
+   Leave `bank`/`account` blank to skip the bank check; put `yes` under `property` for a deeds check.
+2. Free first: `npm run verifynow:smoke -- --file my-test.local.csv`
+3. Real: the script prints the cost and refuses to spend until you type that exact number:
+   `npm run verifynow:smoke -- --file my-test.local.csv --production --confirm-spend <the number it printed> --out verifynow-report.csv`
+
+| What you run | Credits | About (R2.99 a credit) |
+|---|---|---|
+| 5 people, ID check only | 15 | R45 |
+| 10 people, ID check only | 30 | R90 |
+| 10 people: ID for all, bank for 6, deeds for 4 | 106 | R317 |
+| 10 people, all three checks each | 190 | R568 |
+
+Safeguards: nothing is sent until the whole file has been read and costed; a bad ID number, a
+duplicate, an account that cannot be valid, or an unsupported bank refuses the whole run before any
+spend; more than 10 people needs `--max`; a bad key or empty balance stops the run, while a problem
+with one person (no answer, a bad account number) does not. IDs are shown masked, and no name,
+address or account number is printed or written: `--out` holds masked IDs, outcomes and credits only.
+Re-running the same file in the same mode replays within VerifyNow's retry window without a second
+charge (`--new-run` forces fresh requests); sandbox and production use different request keys.
+
 ### 4. Switch on in the server
 ```
 VERIFY_PROVIDER=verifynow

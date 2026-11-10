@@ -10,3 +10,6 @@ build/
 .expo-shared/
 npm-debug.log
 yarn-error.log
+# real test lists: never commit these
+*.local.csv
+verifynow-report*.csv

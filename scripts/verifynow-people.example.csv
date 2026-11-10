@@ -1,0 +1,19 @@
+# A list of consenting people to try the VerifyNow checks on.
+#
+# Copy this file to something ending ".local.csv" (e.g. my-test.local.csv: those names
+# are ignored by git) and replace these made-up rows with real ones. Do NOT commit real
+# ID numbers or account numbers.
+#
+# Columns:   id,first,surname,bank,account,type,property
+#   id         13-digit South African ID number
+#   first      given name(s) as on the ID
+#   surname    surname as on the ID
+#   bank       a bank from the supported list (FNB, ABSA, NEDBANK, STANDARD BANK, CAPITEC BANK, ...)
+#   account    7 to 13 digits   (leave bank/account blank to skip the bank check)
+#   type       CURRENT, SAVINGS, TRANSMISSION or UNKNOWN (default UNKNOWN)
+#   property   yes to run the deeds check (it costs 10 credits)
+#
+id,first,surname,bank,account,type,property
+8503124800081,Grace,Mthembu,FNB,62000009999,SAVINGS,yes
+7905010000082,Sipho,Dlamini,,,,
+9111060000083,Naledi,Khumalo,NEDBANK,1234567890,CURRENT,
