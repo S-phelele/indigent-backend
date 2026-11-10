@@ -21,9 +21,16 @@
  *    VERIFYNOW_MODE=production is set on purpose;
  *  - production POSTs need an Idempotency-Key (8–160 chars); the same key with the
  *    same body replays the saved answer without a second charge;
- *  - ID check:  POST /verify  reportType home_affairs_real_time_idv (3 credits —
- *    names and deceased status). `said_verification` (1 credit) is cheaper but
- *    does NOT return deceased status;
+ *  - ID check, three products, one chosen by VERIFYNOW_ID_REPORT_TYPE:
+ *      consumer_trace_lite  (default) POST /consumer-trace-lite — "Alive/Deceased
+ *                           Status (Standard)", 3 credits: names and deceased flag;
+ *      said_verification    POST /verify, 1 credit: names, but NO deceased flag;
+ *      home_affairs_real_time_idv  POST /verify, "Alive/Deceased Status (Enhanced)",
+ *                           10 credits: real-time, with detailed death fields.
+ *    VerifyNow's own pages disagree about the 3-credit and 10-credit prices (the API
+ *    reference card shows 3 credits for the real-time report; the pricing page and the
+ *    product guide show 10). The dearer figure is used for the spend cap until a real
+ *    call shows what is charged. See docs/VERIFYNOW.md;
  *  - bank:      POST /bank-account-verification (6 credits, not charged when
  *    unsuccessful); needs a 6-digit branch code, 7–13 digit account number;
  *  - property:  POST /property-search (10 credits, charged even when nothing is found);
@@ -127,9 +134,19 @@ const DEFAULT_BASE = 'https://www.verifynow.co.za/api/external';
 /** Sandbox unless production is asked for by name. A typo must never spend money. */
 const vnMode = () => (String(process.env.VERIFYNOW_MODE || '').toLowerCase() === 'production' ? 'production' : 'sandbox');
 
-/** Credits each product costs, from their pricing, for the cost cap. Overridable if their prices change. */
+/**
+ * Credits each product costs, from their pricing page and product guide (both
+ * agree), for the spend cap and the figure recorded against each check.
+ * Overridable with VERIFYNOW_CREDITS_<NAME> if their prices change or a real call
+ * shows a different charge.
+ *
+ * The real-time Home Affairs report is entered at 10, not the 3 their API reference
+ * card shows: a cap that under-counts lets spend run past it, one that over-counts
+ * only stops early.
+ */
 const CREDITS = {
-  home_affairs_real_time_idv: 3,
+  consumer_trace_lite: 3,
+  home_affairs_real_time_idv: 10,
   said_verification: 1,
   bank: 6,
   property: 10,
@@ -174,6 +191,7 @@ async function callVerifyNow({ path, payload, idempotencyKey }) {
 
     if (res.ok && res.status === 200) {
       if (!body || typeof body !== 'object') throw new ProviderError('The verification provider sent a response we could not read.');
+      if (process.env.VERIFYNOW_DEBUG_SHAPE === '1') console.error(`[verifynow shape] ${path} ${JSON.stringify(shapeOf(body))}`);
       return body;
     }
     if (res.status === 202) throw new ProviderError('The verification provider is still processing this request. Try again in a moment.', { retryable: true });
@@ -192,6 +210,47 @@ async function callVerifyNow({ path, payload, idempotencyKey }) {
   } catch (error) {
     if (error instanceof ProviderError || error instanceof NoRecord) throw error;
     if (error.name === 'AbortError') throw new ProviderError('The verification provider took too long to answer.', { retryable: true });
+    throw new ProviderError('We could not reach the verification provider.', { retryable: true });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The structure of a response with every value replaced by its type. Printed when
+ * VERIFYNOW_DEBUG_SHAPE=1, so a developer can compare VerifyNow's real field names
+ * with the documentation without a person's details ever reaching a log.
+ */
+function shapeOf(value, depth = 0) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return value.length ? [shapeOf(value[0], depth + 1), `…${value.length} item(s)`] : [];
+  if (typeof value === 'object') {
+    if (depth > 6) return '{…}';
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shapeOf(v, depth + 1)]));
+  }
+  return typeof value;
+}
+
+/**
+ * The credits left on the account. Free to call (GET /my_credits), and the only
+ * reliable way to learn what a check really cost: read it before and after.
+ */
+async function balance() {
+  const key = process.env.VERIFYNOW_API_KEY;
+  if (!key) throw new ProviderError('VERIFYNOW_API_KEY is not set');
+  const base = (process.env.VERIFYNOW_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`${base}/my_credits`, { headers: { 'x-api-key': key }, signal: controller.signal });
+    if (res.status === 401 || res.status === 403) throw new ProviderError('The verification provider rejected our API key.');
+    if (!res.ok) throw new ProviderError(`Could not read the credit balance (${res.status}).`);
+    const body = await res.json();
+    const credits = Number(body?.Result?.credits ?? body?.credits);
+    if (!Number.isFinite(credits)) throw unreadable();
+    return credits;
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
     throw new ProviderError('We could not reach the verification provider.', { retryable: true });
   } finally {
     clearTimeout(timer);
@@ -319,14 +378,77 @@ function normaliseVerifyNowProperty(body) {
   };
 }
 
+/**
+ * Consumer/Person Trace Lite ("Alive/Deceased Status (Standard)") → the same shape
+ * as the other ID reports.
+ *
+ * The response is `result: [[ { IDNumber, Surname, FirstNames, DOB, Deceased, ...} ]]`.
+ * It also carries cell numbers, a work phone, an email and a physical address. None
+ * of that is needed to check an identity, so none of it is read: it never leaves
+ * this function. Taking only what the purpose requires is what POPIA section 10
+ * asks of us.
+ *
+ * `requestedId` is compared with the ID number on the returned row, so an answer
+ * about somebody else is flagged rather than trusted.
+ */
+function normaliseTraceLite(body, requestedId) {
+  const result = body?.result;
+  const row = Array.isArray(result) ? (Array.isArray(result[0]) ? result[0][0] : result[0]) : null;
+  if (!row || typeof row !== 'object') {
+    // An empty list is not "no such person": a trace dataset is not the population
+    // register. Say so, and let the officer use another check.
+    if (Array.isArray(result) && (result.length === 0 || (Array.isArray(result[0]) && result[0].length === 0))) {
+      throw new ProviderError('The trace service returned nothing for that ID number. This is not proof that nobody holds it; try the Home Affairs real-time check, or record the result by hand.');
+    }
+    throw unreadable();
+  }
+
+  const firstNames = row.FirstNames ?? row.Firstnames ?? null;
+  const surname = row.Surname ?? row.Lastname ?? null;
+  if (!firstNames && !surname) throw unreadable();
+
+  const deceased = tri(row.Deceased);
+  const digits = (v) => String(v ?? '').replace(/\D/g, '');
+  const idMismatch = Boolean(row.IDNumber) && Boolean(requestedId) && digits(row.IDNumber) !== digits(requestedId);
+
+  return {
+    found: true,
+    firstNames,
+    surname,
+    deceased,
+    idMismatch,
+    credits: creditsFor('consumer_trace_lite'),
+    ref: body.requestId ?? null,
+  };
+}
+
+/** The ID reports we can read, and where each is called. */
+const ID_REPORTS = {
+  consumer_trace_lite: { path: '/consumer-trace-lite' },
+  said_verification: { path: '/verify' },
+  home_affairs_real_time_idv: { path: '/verify' },
+};
+
+const idReportType = () => {
+  const wanted = process.env.VERIFYNOW_ID_REPORT_TYPE || 'consumer_trace_lite';
+  if (!ID_REPORTS[wanted]) {
+    throw new ProviderError(`VERIFYNOW_ID_REPORT_TYPE "${wanted}" is not one of: ${Object.keys(ID_REPORTS).join(', ')}.`);
+  }
+  return wanted;
+};
+
 async function checkIdVerifyNow({ idNumber, idempotencyKey }) {
-  const reportType = process.env.VERIFYNOW_ID_REPORT_TYPE || 'home_affairs_real_time_idv';
+  const reportType = idReportType();
   try {
-    const body = await callVerifyNow({ path: '/verify', payload: { reportType, idNumber }, idempotencyKey });
+    if (reportType === 'consumer_trace_lite') {
+      const body = await callVerifyNow({ path: ID_REPORTS[reportType].path, payload: { idNumber }, idempotencyKey });
+      return normaliseTraceLite(body, idNumber);
+    }
+    const body = await callVerifyNow({ path: ID_REPORTS[reportType].path, payload: { reportType, idNumber }, idempotencyKey });
     return normaliseVerifyNow(body, reportType);
   } catch (error) {
     // A completed negative: there is no such person on the register.
-    if (error instanceof NoRecord) return { found: false, credits: error.charged ? creditsFor(reportType in CREDITS ? reportType : 'home_affairs_real_time_idv') : 0, ref: null };
+    if (error instanceof NoRecord) return { found: false, credits: error.charged ? creditsFor(reportType) : 0, ref: null };
     throw error;
   }
 }
@@ -398,8 +520,12 @@ function warnings() {
   if (PROVIDER === 'verifynow') {
     if (!process.env.VERIFYNOW_API_KEY) list.push('VERIFY_PROVIDER=verifynow but VERIFYNOW_API_KEY is not set.');
     if (vnMode() === 'sandbox') list.push('VerifyNow is in SANDBOX mode: results are test data and free. Set VERIFYNOW_MODE=production to run real checks.');
+    const report = process.env.VERIFYNOW_ID_REPORT_TYPE || 'consumer_trace_lite';
+    if (!ID_REPORTS[report]) list.push(`VERIFYNOW_ID_REPORT_TYPE "${report}" is not one of: ${Object.keys(ID_REPORTS).join(', ')}.`);
+    if (report === 'said_verification') list.push('VERIFYNOW_ID_REPORT_TYPE=said_verification returns no deceased status: a dead person\'s ID number would pass.');
+    if (report === 'home_affairs_real_time_idv') list.push('VERIFYNOW_ID_REPORT_TYPE=home_affairs_real_time_idv is about 10 credits (R29.90) a check; consumer_trace_lite gives names and deceased status for about 3.');
   }
   return list;
 }
 
-module.exports = { active, named, warnings, ProviderError, NoRecord, normaliseVerifyNow, normaliseVerifyNowBank, normaliseVerifyNowProperty, callVerifyNow, PROVIDER };
+module.exports = { active, named, warnings, balance, shapeOf, ProviderError, NoRecord, normaliseVerifyNow, normaliseTraceLite, normaliseVerifyNowBank, normaliseVerifyNowProperty, callVerifyNow, PROVIDER };

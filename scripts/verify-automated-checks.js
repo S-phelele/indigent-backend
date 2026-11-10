@@ -86,7 +86,10 @@ async function makeApplication(applicant, over = {}) {
   check('deceased holder is a FAIL', r.json?.data?.outcome === 'FAIL' && /deceased/i.test(r.json.data.findings));
   const noRec = await makeApplication(applicant, { idNumber: '8503124800000' });
   r = await call('POST', url(noRec, 'home-affairs'), { token: verifier, body: {} });
-  check('unknown ID is a FAIL', r.json?.data?.outcome === 'FAIL');
+  // The mock and VerifyNow's /verify answer "no record" (FAIL). The trace service returns an empty
+  // list, which is not proof nobody holds the number: that is reported as an error, saving nothing.
+  check('unknown ID is a FAIL (or, from the trace service, "no answer" with nothing saved)',
+    r.json?.data?.outcome === 'FAIL' || (r.status === 502 && /returned nothing/.test(r.json?.message || '')), r.json?.message);
   const other = await makeApplication(applicant, { idNumber: '8503124802222' });
   r = await call('POST', url(other, 'home-affairs'), { token: verifier, body: {} });
   check('different name is INCONCLUSIVE', r.json?.data?.outcome === 'INCONCLUSIVE');
