@@ -519,7 +519,9 @@ async function runAutomatedCheck(req, res, spec) {
         // One key per application, source and subject, so a retry of the same click is never
         // billed twice. Hashed: the key travels in a header, and is not a place for an ID number.
         idempotencyKey: `indigent-${crypto.createHash('sha256')
-          .update(`${spec.source}|${application.id}|${idNumber}|${prepared.keyPart || ''}|${req.body?.force ? Date.now() : ''}`)
+          // The provider name carries the mode (sandbox or production): the same key with a different
+          // request is a conflict at VerifyNow, so moving from sandbox to production must change it.
+          .update(`${provider.name}|${spec.source}|${application.id}|${idNumber}|${prepared.keyPart || ''}|${req.body?.force ? Date.now() : ''}`)
           .digest('hex').slice(0, 48)}`,
       });
     } catch (error) {

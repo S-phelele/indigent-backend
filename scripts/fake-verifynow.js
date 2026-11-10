@@ -28,7 +28,8 @@
  *
  * ## Test inputs (the same last digits as the built-in mock provider)
  *
- *   ID number    ...0000 no record (502)    ...1111 deceased    ...2222 a different name
+ *   ID number    ...0000 no record (/verify: 502 NO_RECORD_FOUND; /consumer-trace-lite: an empty result)
+ *                ...1111 deceased    ...2222 a different name
  *                ...9091 temporarily unavailable (502)   ...3434 ID number not matched
  *                anything else: the person named by FAKE_NAMES ("FIRST NAMES|SURNAME")
  *   Bank account ...0000 completed negative (code 4)  ...1111 closed  ...2222 someone else's
@@ -79,6 +80,27 @@ function handle(path, b) {
     }];
   }
 
+  // ---- /consumer-trace-lite ("Alive/Deceased Status (Standard)") ---------------
+  if (path === '/api/external/consumer-trace-lite') {
+    if (!/^\d{13}$/.test(b.idNumber || '')) return [400, { error: 'idNumber must be a 13-digit SA ID number' }];
+    const t = tail(b.idNumber, 4);
+    if (t === '9091') return [502, { error: 'Verification temporarily unavailable', code: 'VERIFICATION_TEMPORARILY_UNAVAILABLE' }];
+    // The reference does not say what an unknown ID looks like on this endpoint; an empty list is the
+    // least inventive reading, and the adapter must treat it as "no answer", not as "no such person".
+    if (t === '0000') return [200, { success: true, requestId: 'fake-trace', remaining_credits: credits, service: 'consumer-trace-lite', mode: b.mode, input: { idNumber: b.idNumber }, result: [] }];
+    credits -= 3;
+    const first = t === '2222' ? 'SOMEONE' : FIRST;
+    const last = t === '2222' ? 'ELSE' : LAST;
+    // Deliberately includes the contact and address fields the real service returns, so a test can
+    // prove the adapter never carries them out.
+    const row = {
+      IDNumber: t === '3434' ? '9999999999999' : b.idNumber, Surname: last, FirstNames: first, DOB: '1985-03-12',
+      Deceased: t === '1111' ? 'Yes' : 'No', MaritalStatus: 'SINGLE',
+      Cell1: '0730855852', WorkPhone: '0312554877', Email1: 'person@example.com', Physical_Address_1: '21 JUMP STREET', Postal_Code: '7340',
+    };
+    return [200, { success: true, requestId: 'fake-trace', user_id: '1', remaining_credits: credits, service: 'consumer-trace-lite', mode: b.mode, input: { idNumber: b.idNumber }, result: [[row]] }];
+  }
+
   // ---- /bank-account-verification ------------------------------------------
   if (path === '/api/external/bank-account-verification') {
     const need = ['surname', 'identityNumber', 'identityType', 'bankAccountNumber', 'bankBranchCode', 'bankAccountType'];
@@ -119,6 +141,10 @@ const server = http.createServer((req, res) => {
     try { body = raw ? JSON.parse(raw) : {}; } catch { return send(res, 400, { error: 'Body is not JSON' }); }
     log.push({ method: req.method, url: req.url, headers: { 'x-api-key': req.headers['x-api-key'] ? 'present' : 'absent', authorization: req.headers.authorization, 'idempotency-key': req.headers['idempotency-key'] }, body });
 
+    if (req.method === 'GET' && req.url === '/api/external/my_credits') {
+      if (!req.headers['x-api-key']) return send(res, 401, { error: 'Invalid or missing API key', code: 'UNAUTHORIZED' });
+      return send(res, 200, { Status: 'Success', Result: { credits: String(credits), last_refresh: new Date().toISOString() } });
+    }
     if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
     if (!req.headers['x-api-key']) return send(res, 401, { error: 'Invalid or missing API key', code: 'UNAUTHORIZED' });
     if (!['sandbox', 'production'].includes(body.mode)) return send(res, 400, { error: 'mode must be "sandbox" or "production"' });
