@@ -10,6 +10,9 @@ const saId = require('../lib/saIdNumber');
 const sanitize = require('../lib/sanitize');
 const cache = require('../lib/cache');
 const loginSecurity = require('../lib/loginSecurity');
+const directory = require('../lib/directoryService');
+const { roleFor } = require('../lib/directoryRoles');
+const { unusableHash } = require('../lib/directoryAuth');
 
 /**
  * Administering municipal staff.
@@ -80,6 +83,10 @@ const STAFF_FIELDS = {
   lockedUntil: true,
   failedLoginAttempts: true,
   lastLoginAt: true,
+  // Where the account's credentials live, so the screen can say "Windows account".
+  authSource: true,
+  directoryUsername: true,
+  directorySyncedAt: true,
   createdAt: true,
   updatedAt: true,
 };
@@ -394,13 +401,24 @@ router.patch('/:id', async (req, res) => {
   try {
     const councillor = await prisma.user.findFirst({
       where: { id: req.params.id, role: { in: MANAGEABLE_ROLES } },
-      select: { id: true, email: true, role: true, isActive: true },
+      select: { id: true, email: true, role: true, isActive: true, authSource: true },
     });
     if (!councillor) {
       return res.status(404).json({ success: false, message: 'We could not find that staff member.' });
     }
 
     const { firstName, lastName, cellNumber, ward, email, isActive, role } = req.body || {};
+
+    // The role of a directory account is decided by its Active Directory group.
+    // A role set here would be overwritten at their next sign-in, which is worse
+    // than refusing: it would look as though it had worked.
+    if (councillor.authSource === 'DIRECTORY' && role !== undefined && role !== councillor.role) {
+      return res.status(400).json({
+        success: false,
+        code: 'ROLE_FROM_DIRECTORY',
+        message: 'This person signs in with their Windows account, so their role comes from their Active Directory group. Move them between groups there.',
+      });
+    }
     const data = {};
 
     /**
@@ -523,10 +541,17 @@ router.post('/:id/reset-password', async (req, res) => {
   try {
     const councillor = await prisma.user.findFirst({
       where: { id: req.params.id, role: { in: MANAGEABLE_ROLES } },
-      select: { id: true, email: true, firstName: true, cellNumber: true },
+      select: { id: true, email: true, firstName: true, cellNumber: true, authSource: true },
     });
     if (!councillor) {
       return res.status(404).json({ success: false, message: 'We could not find that staff member.' });
+    }
+    if (councillor.authSource === 'DIRECTORY') {
+      return res.status(400).json({
+        success: false,
+        code: 'PASSWORD_MANAGED_BY_DIRECTORY',
+        message: 'This person signs in with their Windows account. Their password is reset in Active Directory, not here.',
+      });
     }
 
     const credentials = await issueCredentials(councillor, { purpose: 'PASSWORD_RESET_STAFF' });
@@ -592,6 +617,242 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('delete staff error:', error);
     res.status(500).json({ success: false, message: 'We could not remove that account. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Directory (Active Directory)
+// ---------------------------------------------------------------------------
+//
+// Staff are pulled from the municipal directory rather than created by hand.
+// Roles come from AD group membership — see lib/directoryRoles.js — so these
+// endpoints can import people and link existing accounts, but never choose a
+// role: that is decided in Active Directory.
+
+/** Whether the directory is on, and how it is set up, without revealing any secret. */
+router.get('/directory/status', async (req, res) => {
+  try {
+    const enabled = directory.enabled();
+    let map = [];
+    let problems = [];
+    if (enabled) {
+      problems = directory.problems();
+      try { map = [...directory.roleMap().entries()].map(([group, role]) => ({ group, role, roleLabel: ROLE_LABELS[role] })); } catch { /* reported in problems */ }
+    }
+    const last = await prisma.user.aggregate({ where: { authSource: 'DIRECTORY' }, _max: { directorySyncedAt: true }, _count: true });
+    res.json({
+      success: true,
+      data: {
+        enabled,
+        provider: enabled ? directory.providerName() : null,
+        roleMap: map,
+        problems,
+        accounts: last._count,
+        lastSyncedAt: last._max.directorySyncedAt,
+        syncEveryMinutes: parseInt(process.env.AD_SYNC_INTERVAL_MINUTES ?? '60', 10) || 0,
+      },
+    });
+  } catch (error) {
+    console.error('directory status error:', error);
+    res.status(500).json({ success: false, message: 'We could not read the directory settings.' });
+  }
+});
+
+/** Shared by every directory endpoint: turns an outage into a sentence, not a 500. */
+function directoryFailure(res, error, fallback) {
+  if (error instanceof directory.DirectoryUnavailable) {
+    return res.status(503).json({ success: false, code: 'DIRECTORY_UNAVAILABLE', message: 'We could not reach the municipal directory. Try again shortly.' });
+  }
+  console.error('directory error:', error);
+  return res.status(500).json({ success: false, message: fallback });
+}
+
+const directoryOff = (res) => res.status(400).json({
+  success: false,
+  code: 'DIRECTORY_DISABLED',
+  message: 'Directory sign-in is not switched on. Set AD_ENABLED=true in the server settings.',
+});
+
+/** Search the directory for somebody to give access to. */
+router.get('/directory/search', async (req, res) => {
+  if (!directory.enabled()) return directoryOff(res);
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ success: true, data: [] });
+
+    const roleMap = directory.roleMap();
+    const found = await directory.active().search(q);
+
+    const ids = found.map((f) => f.externalId).filter(Boolean);
+    const existing = ids.length
+      ? await prisma.user.findMany({ where: { externalId: { in: ids } }, select: { externalId: true, isActive: true } })
+      : [];
+    const known = new Map(existing.map((u) => [u.externalId, u]));
+
+    res.json({
+      success: true,
+      data: found.map((f) => {
+        const role = roleFor(f.groups, roleMap);
+        return {
+          username: f.username,
+          name: [f.firstName, f.lastName].filter(Boolean).join(' ') || f.displayName || f.username,
+          email: f.email || f.upn,
+          role,
+          roleLabel: role ? ROLE_LABELS[role] : null,
+          // A person in the directory but in no mapped group cannot be given access from here.
+          canImport: Boolean(role),
+          alreadyImported: known.has(f.externalId),
+        };
+      }),
+    });
+  } catch (error) {
+    directoryFailure(res, error, 'We could not search the directory. Please try again.');
+  }
+});
+
+/** Create the local account for a directory user ahead of their first sign-in. */
+router.post('/directory/import', async (req, res) => {
+  if (!directory.enabled()) return directoryOff(res);
+  try {
+    const username = String(req.body?.username || '').trim();
+    if (!username) return res.status(400).json({ success: false, message: 'Choose somebody from the directory first.' });
+
+    const entry = await directory.active().lookup({ username });
+    if (!entry || entry.disabled) {
+      return res.status(404).json({ success: false, message: 'That person is not an active account in the directory.' });
+    }
+
+    const role = roleFor(entry.groups, directory.roleMap());
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        code: 'NO_MAPPED_GROUP',
+        message: 'That person is not in any Active Directory group that grants access. Add them to the right group first; their role comes from it.',
+      });
+    }
+
+    const result = await directory.auth.provision(entry, role);
+    if (result.conflict) return res.status(409).json({ success: false, code: 'CONFLICT', message: result.conflict });
+
+    await audit.record(req, {
+      action: audit.ACTIONS.DIRECTORY_PROVISION,
+      entityType: 'User',
+      entityId: result.user.id,
+      details: `${result.created ? 'Imported' : 'Refreshed'} ${result.user.email} from the directory as ${ROLE_LABELS[role]}`,
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: result.user.id }, select: STAFF_FIELDS });
+    res.status(result.created ? 201 : 200).json({
+      success: true,
+      message: result.created
+        ? `${fullName(user)} was added as ${ROLE_LABELS[role]}. They sign in with their Windows account; no password was issued.`
+        : `${fullName(user)} was already here; their details were refreshed.`,
+      data: { ...user, name: fullName(user), roleLabel: ROLE_LABELS[user.role] },
+    });
+  } catch (error) {
+    directoryFailure(res, error, 'We could not import that person. Please try again.');
+  }
+});
+
+/** Re-read everybody from the directory now, instead of waiting for the schedule. */
+router.post('/directory/sync', async (req, res) => {
+  if (!directory.enabled()) return directoryOff(res);
+  try {
+    const summary = await directory.sync.run();
+    await audit.record(req, {
+      action: audit.ACTIONS.DIRECTORY_SYNC,
+      details: summary.aborted
+        ? `Sync stopped: ${summary.aborted}`
+        : `Checked ${summary.checked}; deactivated ${summary.deactivated.length}; ${summary.roleChanges.length} role change(s)`,
+    });
+    res.json({ success: !summary.aborted, message: summary.aborted || 'Sync complete.', data: summary });
+  } catch (error) {
+    directoryFailure(res, error, 'We could not run the sync. Please try again.');
+  }
+});
+
+/**
+ * Move an existing local staff account onto the directory.
+ *
+ * The migration path for people who already have an account here. The account
+ * keeps its id — so every application, approval and audit row stays attached to
+ * the same person — but from now on its password is the Windows one and its role
+ * follows its group.
+ *
+ * Two safeguards. Nobody may link their own account, because if the directory
+ * would give them a lower role they would have demoted themselves out of this
+ * screen. And at least one *local* administrator must remain active afterwards:
+ * that account is the way back in when the directory is down, and without it a
+ * directory outage locks every administrator out at once.
+ */
+router.post('/:id/link-directory', async (req, res) => {
+  if (!directory.enabled()) return directoryOff(res);
+  try {
+    const target = await prisma.user.findFirst({
+      where: { id: req.params.id, role: { not: 'APPLICANT' } },
+      select: { id: true, email: true, role: true, authSource: true, isActive: true },
+    });
+    if (!target) return res.status(404).json({ success: false, message: 'We could not find that staff member.' });
+    if (target.authSource === 'DIRECTORY') return res.status(400).json({ success: false, message: 'That account already uses the directory.' });
+    if (target.id === req.user.id) {
+      return res.status(400).json({ success: false, message: 'You cannot link your own account. Ask another administrator to do it.' });
+    }
+
+    const username = String(req.body?.username || '').trim();
+    if (!username) return res.status(400).json({ success: false, message: 'Enter their Windows username.' });
+
+    const entry = await directory.active().lookup({ username });
+    if (!entry || entry.disabled) return res.status(404).json({ success: false, message: 'That is not an active account in the directory.' });
+
+    const role = roleFor(entry.groups, directory.roleMap());
+    if (!role) {
+      return res.status(400).json({ success: false, code: 'NO_MAPPED_GROUP', message: 'That directory account is not in any group that grants access.' });
+    }
+
+    const taken = await prisma.user.findUnique({ where: { externalId: entry.externalId }, select: { id: true } });
+    if (taken) return res.status(409).json({ success: false, message: 'That directory account is already linked to another person here.' });
+
+    const remainingLocalAdmins = await prisma.user.count({
+      where: { id: { not: target.id }, authSource: 'LOCAL', isActive: true, role: { in: ['ADMIN', 'SUPERUSER'] } },
+    });
+    if (['ADMIN', 'SUPERUSER'].includes(target.role) && remainingLocalAdmins === 0) {
+      return res.status(409).json({
+        success: false,
+        code: 'LAST_LOCAL_ADMIN',
+        message: 'This is the last administrator with a local password. Keep at least one, so somebody can still sign in if the directory is unreachable.',
+      });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: target.id },
+      data: {
+        authSource: 'DIRECTORY',
+        externalId: entry.externalId,
+        directoryUsername: entry.username,
+        directorySyncedAt: new Date(),
+        role,
+        password: await unusableHash(),
+        mustChangePassword: false,
+        // Ends sessions opened with the old local password.
+        passwordChangedAt: new Date(),
+      },
+      select: STAFF_FIELDS,
+    });
+
+    await audit.record(req, {
+      action: audit.ACTIONS.DIRECTORY_LINK,
+      entityType: 'User',
+      entityId: user.id,
+      details: `Linked ${user.email} to directory account ${entry.username}; role ${target.role} → ${role}`,
+    });
+
+    res.json({
+      success: true,
+      message: `${fullName(user)} now signs in with their Windows account as ${ROLE_LABELS[role]}.`,
+      data: { ...user, name: fullName(user), roleLabel: ROLE_LABELS[user.role] },
+    });
+  } catch (error) {
+    directoryFailure(res, error, 'We could not link that account. Please try again.');
   }
 });
 

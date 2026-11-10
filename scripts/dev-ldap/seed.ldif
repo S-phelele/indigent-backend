@@ -1,0 +1,126 @@
+dn: dc=city,dc=test
+objectClass: top
+objectClass: dcObject
+objectClass: organization
+o: City
+dc: city
+
+dn: ou=Staff,dc=city,dc=test
+objectClass: organizationalUnit
+ou: Staff
+
+dn: ou=Service,dc=city,dc=test
+objectClass: organizationalUnit
+ou: Service
+
+dn: cn=svc-indigent,ou=Service,dc=city,dc=test
+objectClass: person
+cn: svc-indigent
+sn: svc
+userPassword: SvcPass#1
+
+dn: cn=Jane Admin,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Jane Admin
+givenName: Jane
+sn: Admin
+displayName: Jane Admin
+mail: jane.admin@city.test
+mobile: 0821110001
+sAMAccountName: jadmin
+userPrincipalName: jadmin@city.test
+userAccountControl: 512
+objectCategory: person
+objectGUID:: ABEiM0RVZneImaq7zN3u/w==
+memberOf: CN=Indigent-Admins,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Vusi Verifier,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Vusi Verifier
+givenName: Vusi
+sn: Verifier
+mail: vusi@city.test
+sAMAccountName: jverify
+userPrincipalName: jverify@city.test
+userAccountControl: 512
+objectCategory: person
+objectGUID:: AREiM0RVZneImaq7zN3u/w==
+memberOf: CN=Indigent-Verification,OU=Groups,DC=city,DC=test
+memberOf: CN=Everyone,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Olga Outsider,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Olga Outsider
+givenName: Olga
+sn: Outsider
+mail: olga@city.test
+sAMAccountName: joutsider
+userPrincipalName: joutsider@city.test
+userAccountControl: 512
+objectCategory: person
+objectGUID:: AhEiM0RVZneImaq7zN3u/w==
+memberOf: CN=Finance-Clerks,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Lenny Leaver,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Lenny Leaver
+givenName: Lenny
+sn: Leaver
+mail: lenny@city.test
+sAMAccountName: jleaver
+userPrincipalName: jleaver@city.test
+userAccountControl: 514
+objectCategory: person
+objectGUID:: AxEiM0RVZneImaq7zN3u/w==
+memberOf: CN=Indigent-Verification,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Twin One,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Twin One
+sn: One
+sAMAccountName: twin
+userPrincipalName: twin1@city.test
+userAccountControl: 512
+objectCategory: person
+objectGUID:: BBEiM0RVZneImaq7zN3u/w==
+memberOf: CN=Indigent-Admins,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Twin Two,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+objectClass: user
+cn: Twin Two
+sn: Two
+sAMAccountName: twin
+userPrincipalName: twin2@city.test
+userAccountControl: 512
+objectCategory: person
+objectGUID:: BREiM0RVZneImaq7zN3u/w==
+memberOf: CN=Indigent-Admins,OU=Groups,DC=city,DC=test
+userPassword: Passw0rd!
+
+dn: cn=Cindy Computer,ou=Staff,dc=city,dc=test
+objectClass: inetOrgPerson
+objectClass: adUser
+cn: Cindy Computer
+sn: Computer
+sAMAccountName: cindy-pc
+userAccountControl: 4096
+objectCategory: computer
+objectGUID:: BhEiM0RVZneImaq7zN3u/w==
+userPassword: Passw0rd!

@@ -28,6 +28,7 @@ const authenticate = async (req, res, next) => {
         mustChangePassword: true,
         passwordChangedAt: true,
         lockedUntil: true,
+        authSource: true,
       },
     });
 

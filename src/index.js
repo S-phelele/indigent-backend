@@ -27,6 +27,7 @@ const privacyRoutes = require('./routes/privacy');
 const renewal = require('./lib/renewal');
 const retention = require('./lib/retention');
 const loginSecurity = require('./lib/loginSecurity');
+const directory = require('./lib/directoryService');
 const verifyProvider = require('./lib/verifyProvider');
 
 const app = express();
@@ -91,6 +92,18 @@ if (process.env.JWT_EXPIRES_IN) {
   );
 }
 
+// --- Directory sign-in -------------------------------------------------------
+// A half-configured directory either locks everybody out or, worse, quietly runs
+// an insecure bind. In production that stops the server; elsewhere it is a loud
+// warning, so a developer sees it without being blocked.
+if (directory.enabled()) {
+  const directoryProblems = directory.problems();
+  for (const problem of directoryProblems) {
+    console.error(`${process.env.NODE_ENV === 'production' ? 'FATAL' : 'WARNING'}: directory sign-in — ${problem}`);
+  }
+  if (directoryProblems.length && process.env.NODE_ENV === 'production') process.exit(1);
+  console.log(`[directory] sign-in through ${directory.providerName()} is ON`);
+}
 // --- Automated checks --------------------------------------------------------
 // Not fatal (a municipality may not use them), but a result built on test data
 // or the wrong mode should never be discovered from the screen.
@@ -308,6 +321,10 @@ const stopRenewalMonitor = renewal.schedule();
 // what is overdue; only removes it if RETENTION_AUTO_APPLY is explicitly on.
 const stopRetentionSweep = retention.schedule();
 
+// Somebody who leaves the directory group does not sign in again to be told so.
+// This is what makes leaving the group the same act as losing access.
+const stopDirectorySync = directory.enabled() ? directory.sync.schedule() : () => {};
+
 // --- Graceful shutdown ------------------------------------------------------
 // Finish in-flight requests and close the connection pool, so deploys and
 // restarts do not sever open uploads or leak Postgres connections.
@@ -325,6 +342,7 @@ async function shutdown(signal) {
   stopSlaMonitor();
   stopRenewalMonitor();
   stopRetentionSweep();
+  stopDirectorySync();
 
   server.close(async () => {
     try {
